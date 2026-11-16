@@ -386,6 +386,31 @@ func (c *Client) StageFile(ctx context.Context, path string) error {
 	return err
 }
 
+func (c *Client) StageAll(ctx context.Context) error {
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	c.setLastCommand("add", "-A")
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "add", "-A")
+	return err
+}
+
+func (c *Client) UnstageAll(ctx context.Context) error {
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	if c.hasHead(ctx, rootDir) {
+		c.setLastCommand("reset", "HEAD")
+		_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "reset", "HEAD")
+		return err
+	}
+	c.setLastCommand("rm", "-r", "--cached", ".")
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "rm", "-r", "--cached", ".")
+	return err
+}
+
 func (c *Client) UnstageFile(ctx context.Context, path string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("file path cannot be empty")

@@ -666,6 +666,19 @@ func (m Model) handleChangesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, toggleStageCmd(m.client, files[m.fileIdx]))
+	case key.Matches(msg, m.keys.StageAll):
+		if len(m.files) == 0 {
+			return m, nil
+		}
+		allStaged := true
+		for _, f := range m.files {
+			if !f.IsStaged || f.IsUnstaged || f.IsUntracked || f.IsConflicted {
+				allStaged = false
+				break
+			}
+		}
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, toggleStageAllCmd(m.client, allStaged))
 	case key.Matches(msg, m.keys.Commit):
 		if m.state.ConflictCount > 0 {
 			m.errMsg = "Resolva os conflitos antes de fazer commit"

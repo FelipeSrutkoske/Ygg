@@ -172,6 +172,22 @@ func toggleStageCmd(client *git.Client, file git.FileStatus) tea.Cmd {
 	}
 }
 
+func toggleStageAllCmd(client *git.Client, allStaged bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		if allStaged {
+			if err := client.UnstageAll(ctx); err != nil {
+				return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+			}
+			return actionDoneMsg{message: "Todos os arquivos removidos do stage", lastCmd: client.LastCommand()}
+		}
+		if err := client.StageAll(ctx); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: "Todos os arquivos preparados (staged)", lastCmd: client.LastCommand()}
+	}
+}
+
 func commitCmd(client *git.Client, message string) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.Commit(context.Background(), message); err != nil {

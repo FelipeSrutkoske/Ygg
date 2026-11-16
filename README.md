@@ -72,6 +72,7 @@ Opções e comandos disponíveis:
 | Atalho | Ação |
 | --- | --- |
 | `Espaço` / `s` | Adicionar ou remover arquivo do *stage* (*Stage / Unstage*) |
+| `Shift+Espaço` / `S` | Alternar *stage*/*unstage* de todas as alterações (`git add -A` / `git reset HEAD`) |
 | `Enter` / `d` | Abrir visualizador de diff em tela cheia (estilo VS Code) |
 | `c` | Abrir modal de commit |
 | `z` | Guardar (*Stash*) ou restaurar (*Pop*) alterações |

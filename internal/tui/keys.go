@@ -19,6 +19,7 @@ type keyMap struct {
 	DeleteBranch       key.Binding
 	MergeBranch        key.Binding
 	Stage              key.Binding
+	StageAll           key.Binding
 	Commit             key.Binding
 	Stash              key.Binding
 	Discard            key.Binding
@@ -105,6 +106,10 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("space", "s"),
 			key.WithHelp("Espaço/s", "preparar/remover"),
 		),
+		StageAll: key.NewBinding(
+			key.WithKeys("shift+space", "S"),
+			key.WithHelp("Shift+Espaço/S", "preparar/remover tudo"),
+		),
 		Commit: key.NewBinding(
 			key.WithKeys("c"),
 			key.WithHelp("c", "fazer commit"),
@@ -188,7 +193,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom, k.PageUp, k.PageDown, k.NextTab, k.Filter},
 		{k.Switch, k.ToggleRemotes, k.NewBranch, k.DeleteBranch, k.MergeBranch},
-		{k.Stage, k.Commit, k.Stash, k.Discard, k.ViewDiff, k.ToggleDiffMode, k.OpenEditor},
+		{k.Stage, k.StageAll, k.Commit, k.Stash, k.Discard, k.ViewDiff, k.ToggleDiffMode, k.OpenEditor},
 		{k.RevertCommit, k.CherryPick, k.ToggleCommitBranch, k.KeepOurs, k.AcceptTheirs},
 		{k.Fetch, k.Pull, k.Push, k.Refresh, k.Help, k.Quit},
 	}
