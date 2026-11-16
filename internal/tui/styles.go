@@ -33,6 +33,13 @@ type styles struct {
 	commitMeta      lipgloss.Style
 	diffAdd         lipgloss.Style
 	diffDel         lipgloss.Style
+	diffAddLine     lipgloss.Style
+	diffDelLine     lipgloss.Style
+	diffAddGutter   lipgloss.Style
+	diffDelGutter   lipgloss.Style
+	diffLineNum     lipgloss.Style
+	diffStatAdd     lipgloss.Style
+	diffStatDel     lipgloss.Style
 	diffHunk        lipgloss.Style
 	diffMeta        lipgloss.Style
 	conflictOurs    lipgloss.Style
@@ -42,6 +49,9 @@ type styles struct {
 	bannerInfo      lipgloss.Style
 	bannerError     lipgloss.Style
 	footer          lipgloss.Style
+	cmdBadge        lipgloss.Style
+	cmdText         lipgloss.Style
+	filterBadge     lipgloss.Style
 	modalBox        lipgloss.Style
 	modalTitle      lipgloss.Style
 	modalWarn       lipgloss.Style
@@ -144,6 +154,32 @@ func defaultStyles() styles {
 			Foreground(charmtone.Julep),
 		diffDel: lipgloss.NewStyle().
 			Foreground(charmtone.Coral),
+		diffAddLine: lipgloss.NewStyle().
+			Foreground(charmtone.Julep).
+			Background(lipgloss.Color("#133020")),
+		diffDelLine: lipgloss.NewStyle().
+			Foreground(charmtone.Coral).
+			Background(lipgloss.Color("#38161b")),
+		diffAddGutter: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Guac).
+			Background(lipgloss.Color("#1b452d")),
+		diffDelGutter: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Coral).
+			Background(lipgloss.Color("#4f1c24")),
+		diffLineNum: lipgloss.NewStyle().
+			Foreground(charmtone.Oyster),
+		diffStatAdd: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Pepper).
+			Background(charmtone.Guac).
+			Padding(0, 1),
+		diffStatDel: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Salt).
+			Background(charmtone.Coral).
+			Padding(0, 1),
 		diffHunk: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(charmtone.Malibu),
@@ -170,6 +206,18 @@ func defaultStyles() styles {
 			Foreground(charmtone.Coral),
 		footer: lipgloss.NewStyle().
 			Foreground(charmtone.Oyster),
+		cmdBadge: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Pepper).
+			Background(charmtone.Malibu).
+			Padding(0, 1),
+		cmdText: lipgloss.NewStyle().
+			Foreground(charmtone.Salt),
+		filterBadge: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Pepper).
+			Background(charmtone.Butter).
+			Padding(0, 1),
 		modalBox: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(charmtone.Charple).

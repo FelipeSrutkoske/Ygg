@@ -15,6 +15,7 @@ type repoLoadedMsg struct {
 	state    git.RepoState
 	branches []git.Branch
 	status   []git.FileStatus
+	lastCmd  string
 	err      error
 }
 
@@ -30,21 +31,30 @@ type diffLoadedMsg struct {
 	err  error
 }
 
+type commitDiffLoadedMsg struct {
+	hash string
+	diff string
+	err  error
+}
+
 type actionDoneMsg struct {
 	message string
+	lastCmd string
 	err     error
 }
 
 type mergeDoneMsg struct {
-	branch string
-	res    git.MergeResult
-	err    error
+	branch  string
+	res     git.MergeResult
+	lastCmd string
+	err     error
 }
 
 type deleteBranchErrMsg struct {
-	branch string
-	force  bool
-	err    error
+	branch  string
+	force   bool
+	lastCmd string
+	err     error
 }
 
 type editorFinishedMsg struct {
@@ -56,23 +66,24 @@ func loadRepoCmd(client *git.Client, includeRemote bool) tea.Cmd {
 		ctx := context.Background()
 		state, err := client.InspectRepo(ctx)
 		if err != nil {
-			return repoLoadedMsg{err: err}
+			return repoLoadedMsg{lastCmd: client.LastCommand(), err: err}
 		}
 		if state.Kind == git.KindNotARepo {
-			return repoLoadedMsg{state: state}
+			return repoLoadedMsg{state: state, lastCmd: client.LastCommand()}
 		}
 		branches, err := client.ListBranches(ctx, includeRemote)
 		if err != nil {
-			return repoLoadedMsg{state: state, err: err}
+			return repoLoadedMsg{state: state, lastCmd: client.LastCommand(), err: err}
 		}
 		status, err := client.ListStatus(ctx)
 		if err != nil {
-			return repoLoadedMsg{state: state, branches: branches, err: err}
+			return repoLoadedMsg{state: state, branches: branches, lastCmd: client.LastCommand(), err: err}
 		}
 		return repoLoadedMsg{
 			state:    state,
 			branches: branches,
 			status:   status,
+			lastCmd:  client.LastCommand(),
 		}
 	}
 }
@@ -91,12 +102,19 @@ func loadDiffCmd(client *git.Client, file git.FileStatus) tea.Cmd {
 	}
 }
 
+func loadCommitDiffCmd(client *git.Client, hash string) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := client.ShowCommit(context.Background(), hash)
+		return commitDiffLoadedMsg{hash: hash, diff: diff, err: err}
+	}
+}
+
 func switchBranchCmd(client *git.Client, name string) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.SwitchBranch(context.Background(), name); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("Branch alterada para %s", name)}
+		return actionDoneMsg{message: fmt.Sprintf("Branch alterada para %s", name), lastCmd: client.LastCommand()}
 	}
 }
 
@@ -104,37 +122,37 @@ func stashAndSwitchCmd(client *git.Client, name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		if err := client.StashPush(ctx, "go-vit: stash automatico antes de trocar para "+name); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
 		if err := client.SwitchBranch(ctx, name); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("Stash salvo e branch alterada para %s", name)}
+		return actionDoneMsg{message: fmt.Sprintf("Stash salvo e branch alterada para %s", name), lastCmd: client.LastCommand()}
 	}
 }
 
 func createBranchCmd(client *git.Client, name string) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.CreateBranch(context.Background(), name); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("Branch %s criada e selecionada", name)}
+		return actionDoneMsg{message: fmt.Sprintf("Branch %s criada e selecionada", name), lastCmd: client.LastCommand()}
 	}
 }
 
 func deleteBranchCmd(client *git.Client, name string, force bool) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.DeleteBranch(context.Background(), name, force); err != nil {
-			return deleteBranchErrMsg{branch: name, force: force, err: err}
+			return deleteBranchErrMsg{branch: name, force: force, lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("Branch %s excluida", name)}
+		return actionDoneMsg{message: fmt.Sprintf("Branch %s excluida", name), lastCmd: client.LastCommand()}
 	}
 }
 
 func mergeBranchCmd(client *git.Client, name string) tea.Cmd {
 	return func() tea.Msg {
 		res, err := client.MergeBranch(context.Background(), name)
-		return mergeDoneMsg{branch: name, res: res, err: err}
+		return mergeDoneMsg{branch: name, res: res, lastCmd: client.LastCommand(), err: err}
 	}
 }
 
@@ -143,23 +161,23 @@ func toggleStageCmd(client *git.Client, file git.FileStatus) tea.Cmd {
 		ctx := context.Background()
 		if file.IsStaged && !file.IsUnstaged && !file.IsConflicted {
 			if err := client.UnstageFile(ctx, file.Path); err != nil {
-				return actionDoneMsg{err: err}
+				return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 			}
-			return actionDoneMsg{message: fmt.Sprintf("Removido do stage: %s", file.Path)}
+			return actionDoneMsg{message: fmt.Sprintf("Removido do stage: %s", file.Path), lastCmd: client.LastCommand()}
 		}
 		if err := client.StageFile(ctx, file.Path); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("Preparado (staged): %s", file.Path)}
+		return actionDoneMsg{message: fmt.Sprintf("Preparado (staged): %s", file.Path), lastCmd: client.LastCommand()}
 	}
 }
 
 func commitCmd(client *git.Client, message string) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.Commit(context.Background(), message); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: "Commit realizado com sucesso"}
+		return actionDoneMsg{message: "Commit realizado com sucesso", lastCmd: client.LastCommand()}
 	}
 }
 
@@ -168,54 +186,82 @@ func stashToggleCmd(client *git.Client, hasChanges bool) tea.Cmd {
 		ctx := context.Background()
 		if hasChanges {
 			if err := client.StashPush(ctx, "go-vit: stash rapido"); err != nil {
-				return actionDoneMsg{err: err}
+				return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 			}
-			return actionDoneMsg{message: "Alteracoes guardadas no stash"}
+			return actionDoneMsg{message: "Alteracoes guardadas no stash", lastCmd: client.LastCommand()}
 		}
 		if err := client.StashPop(ctx); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: "Stash restaurado (pop)"}
+		return actionDoneMsg{message: "Stash restaurado (pop)", lastCmd: client.LastCommand()}
 	}
 }
 
 func discardFileCmd(client *git.Client, file git.FileStatus) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.DiscardFile(context.Background(), file); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: fmt.Sprintf("Alteracoes descartadas: %s", file.Path)}
+		return actionDoneMsg{message: fmt.Sprintf("Alteracoes descartadas: %s", file.Path), lastCmd: client.LastCommand()}
 	}
 }
 
 func resolveConflictCmd(client *git.Client, path string, side git.ConflictSide) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.ResolveConflict(context.Background(), path, side); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
 		label := "nossos (ours)"
 		if side == git.SideTheirs {
 			label = "deles (theirs)"
 		}
-		return actionDoneMsg{message: fmt.Sprintf("Conflito resolvido (%s): %s", label, path)}
+		return actionDoneMsg{message: fmt.Sprintf("Conflito resolvido (%s): %s", label, path), lastCmd: client.LastCommand()}
 	}
 }
 
 func fetchCmd(client *git.Client) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.Fetch(context.Background()); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: "Fetch concluido"}
+		return actionDoneMsg{message: "Fetch concluido", lastCmd: client.LastCommand()}
 	}
 }
 
 func pullCmd(client *git.Client) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.Pull(context.Background()); err != nil {
-			return actionDoneMsg{err: err}
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: "Pull concluido"}
+		return actionDoneMsg{message: "Pull concluido", lastCmd: client.LastCommand()}
+	}
+}
+
+func pushCmd(client *git.Client) tea.Cmd {
+	return func() tea.Msg {
+		msg, err := client.Push(context.Background())
+		if err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: msg, lastCmd: client.LastCommand()}
+	}
+}
+
+func revertCommitCmd(client *git.Client, hash string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.RevertCommit(context.Background(), hash); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("Commit %s revertido", hash), lastCmd: client.LastCommand()}
+	}
+}
+
+func cherryPickCmd(client *git.Client, hash string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.CherryPick(context.Background(), hash); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("Cherry-pick de %s aplicado", hash), lastCmd: client.LastCommand()}
 	}
 }
 

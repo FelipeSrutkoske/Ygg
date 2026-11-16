@@ -21,7 +21,9 @@ func (m Model) View() tea.View {
 	}
 
 	var content string
-	if m.modal != modalNone {
+	if m.modal == modalDiffView {
+		content = m.renderDiffModal()
+	} else if m.modal != modalNone {
 		content = m.renderModal()
 	} else if m.state.Kind == git.KindNotARepo && !m.loading {
 		content = m.renderNotARepo()
@@ -41,11 +43,17 @@ func (m *Model) resizeViewport() {
 	_, _, rightW, rightH := m.paneDimensions()
 	vpW := max(16, rightW-4)
 	vpH := max(3, rightH-4)
-	if m.activeTab == tabChanges && len(m.files) > 0 && m.files[m.fileIdx].IsConflicted {
+	files := m.visibleFiles()
+	if m.activeTab == tabChanges && len(files) > 0 && files[m.fileIdx].IsConflicted {
 		vpH = max(2, vpH-2)
 	}
 	m.viewport.SetWidth(vpW)
 	m.viewport.SetHeight(vpH)
+
+	modalW := max(40, m.width-4)
+	modalH := max(10, m.height-2)
+	m.diffModalViewport.SetWidth(max(32, modalW-4))
+	m.diffModalViewport.SetHeight(max(4, modalH-6))
 }
 
 func (m *Model) paneDimensions() (leftW, leftH, rightW, rightH int) {
@@ -61,7 +69,7 @@ func (m *Model) paneDimensions() (leftW, leftH, rightW, rightH int) {
 		return
 	}
 
-	leftW = max(32, m.width*38/100)
+	leftW = max(34, m.width*38/100)
 	rightW = max(30, m.width-leftW)
 	leftH = bodyH
 	rightH = bodyH
@@ -70,25 +78,80 @@ func (m *Model) paneDimensions() (leftW, leftH, rightW, rightH int) {
 
 func (m *Model) syncRightPane() {
 	m.resizeViewport()
-	if m.activeTab == tabBranches {
+	switch m.activeTab {
+	case tabBranches:
 		m.viewport.SetContent(m.renderCommitLog())
 		m.viewport.GotoTop()
-		return
-	}
 
-	if len(m.files) == 0 {
-		m.viewport.SetContent(m.styles.emptyState.Render("Nenhuma alteracao pendente. O diretorio de trabalho esta limpo."))
+	case tabChanges:
+		files := m.visibleFiles()
+		if len(files) == 0 {
+			if m.filterQuery != "" && len(m.files) > 0 {
+				m.viewport.SetContent(m.styles.emptyState.Render("Nenhum arquivo corresponde ao filtro atual."))
+			} else {
+				m.viewport.SetContent(m.styles.emptyState.Render("Nenhuma alteracao pendente. O diretorio de trabalho esta limpo."))
+			}
+			m.viewport.GotoTop()
+			return
+		}
+		f := files[m.fileIdx]
+		if f.IsConflicted {
+			m.viewport.SetContent(m.renderConflictDiff(m.diffText))
+		} else {
+			m.viewport.SetContent(renderVSCodeUnifiedDiff(m.diffText, max(36, m.viewport.Width()), m.styles))
+		}
 		m.viewport.GotoTop()
+
+	case tabCommits:
+		commits := m.visibleCommits()
+		if len(commits) == 0 {
+			if m.filterQuery != "" && len(m.commits) > 0 {
+				m.viewport.SetContent(m.styles.emptyState.Render("Nenhum commit corresponde ao filtro atual."))
+			} else {
+				m.viewport.SetContent(m.styles.emptyState.Render("Nenhum commit encontrado nesta branch."))
+			}
+			m.viewport.GotoTop()
+			return
+		}
+		m.viewport.SetContent(renderVSCodeUnifiedDiff(m.commitDiffText, max(36, m.viewport.Width()), m.styles))
+		m.viewport.GotoTop()
+	}
+}
+
+func (m *Model) syncDiffModal() {
+	m.resizeViewport()
+	vpW := max(36, m.diffModalViewport.Width())
+
+	if m.activeTab == tabChanges {
+		files := m.visibleFiles()
+		if len(files) == 0 {
+			m.diffModalViewport.SetContent(m.styles.emptyState.Render("Nenhum arquivo selecionado."))
+			return
+		}
+		if files[m.fileIdx].IsConflicted {
+			m.diffModalViewport.SetContent(m.renderConflictDiff(m.diffText))
+			return
+		}
+		if m.sideBySideDiff {
+			m.diffModalViewport.SetContent(renderVSCodeSideBySideDiff(m.diffText, vpW, m.styles))
+		} else {
+			m.diffModalViewport.SetContent(renderVSCodeUnifiedDiff(m.diffText, vpW, m.styles))
+		}
 		return
 	}
 
-	f := m.files[m.fileIdx]
-	if f.IsConflicted {
-		m.viewport.SetContent(m.renderConflictDiff(m.diffText))
-	} else {
-		m.viewport.SetContent(m.renderColorDiff(m.diffText))
+	if m.activeTab == tabCommits {
+		commits := m.visibleCommits()
+		if len(commits) == 0 {
+			m.diffModalViewport.SetContent(m.styles.emptyState.Render("Nenhum commit selecionado."))
+			return
+		}
+		if m.sideBySideDiff {
+			m.diffModalViewport.SetContent(renderVSCodeSideBySideDiff(m.commitDiffText, vpW, m.styles))
+		} else {
+			m.diffModalViewport.SetContent(renderVSCodeUnifiedDiff(m.commitDiffText, vpW, m.styles))
+		}
 	}
-	m.viewport.GotoTop()
 }
 
 func (m Model) renderMain() string {
@@ -136,12 +199,21 @@ func (m Model) renderHeader() string {
 		branchBadge = m.styles.branchBadge.Render(label)
 	}
 
+	upstreamStr := ""
+	if m.state.Kind == git.KindNormal {
+		if m.state.Upstream != "" {
+			upstreamStr = " " + m.styles.itemMuted.Render("-> "+m.state.Upstream)
+		} else {
+			upstreamStr = " " + m.styles.itemMuted.Render("[sem upstream]")
+		}
+	}
+
 	var syncParts []string
 	if m.state.Ahead > 0 {
-		syncParts = append(syncParts, fmt.Sprintf("^%d", m.state.Ahead))
+		syncParts = append(syncParts, fmt.Sprintf("↑%d", m.state.Ahead))
 	}
 	if m.state.Behind > 0 {
-		syncParts = append(syncParts, fmt.Sprintf("v%d", m.state.Behind))
+		syncParts = append(syncParts, fmt.Sprintf("↓%d", m.state.Behind))
 	}
 	syncStr := ""
 	if len(syncParts) > 0 {
@@ -166,7 +238,7 @@ func (m Model) renderHeader() string {
 		statusBadge = m.styles.statusClean.Render("Limpo")
 	}
 
-	left := m.styles.repoName.Render("go-vit :: "+repo) + "  " + branchBadge + syncStr + "  " + statusBadge
+	left := m.styles.repoName.Render("go-vit :: "+truncateText(repo, 24)) + "  " + branchBadge + upstreamStr + syncStr + "  " + statusBadge
 	if m.loading {
 		left += "  " + m.spinner.View()
 	}
@@ -186,42 +258,64 @@ func (m Model) renderLeftPane(w, h int) string {
 	} else if len(m.files) > 0 {
 		tab2Label = fmt.Sprintf("[2] Alteracoes (%d)", len(m.files))
 	}
+	tab3Label := "[3] Historico"
 
-	var t1, t2 string
-	if m.activeTab == tabBranches {
+	t1 := m.styles.tabInactive.Render(tab1Label)
+	t2 := m.styles.tabInactive.Render(tab2Label)
+	t3 := m.styles.tabInactive.Render(tab3Label)
+	switch m.activeTab {
+	case tabBranches:
 		t1 = m.styles.tabActive.Render(tab1Label)
-		t2 = m.styles.tabInactive.Render(tab2Label)
-	} else {
-		t1 = m.styles.tabInactive.Render(tab1Label)
+	case tabChanges:
 		t2 = m.styles.tabActive.Render(tab2Label)
+	case tabCommits:
+		t3 = m.styles.tabActive.Render(tab3Label)
 	}
 
-	tabsRow := t1 + " " + t2
-	listH := max(1, innerH-2)
+	tabsRow := t1 + " " + t2 + " " + t3
+	headerLines := []string{
+		tabsRow,
+		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
+	}
+
+	if m.filtering {
+		headerLines = append(headerLines, m.styles.filterBadge.Render("/")+" "+m.filterInput.View())
+	} else if m.filterQuery != "" {
+		headerLines = append(headerLines, m.styles.filterBadge.Render("FILTRO")+" "+m.styles.itemNormal.Render(truncateText(m.filterQuery, max(8, innerW-18)))+" "+m.styles.itemMuted.Render("(Esc)"))
+	}
+
+	listH := max(1, innerH-len(headerLines))
 
 	var body string
-	if m.activeTab == tabBranches {
+	switch m.activeTab {
+	case tabBranches:
 		body = m.renderBranchList(innerW, listH)
-	} else {
+	case tabChanges:
 		body = m.renderFileList(innerW, listH)
+	case tabCommits:
+		body = m.renderCommitList(innerW, listH)
 	}
 
-	content := tabsRow + "\n" + m.styles.itemMuted.Render(strings.Repeat("-", innerW)) + "\n" + body
+	content := strings.Join(append(headerLines, body), "\n")
 	return m.styles.paneActive.Width(w - 2).Height(h - 2).Render(content)
 }
 
 func (m Model) renderBranchList(w, h int) string {
-	if len(m.branches) == 0 {
+	branches := m.visibleBranches()
+	if len(branches) == 0 {
+		if m.filterQuery != "" && len(m.branches) > 0 {
+			return m.styles.emptyState.Render("Nenhuma branch corresponde ao filtro.\nPressione Esc para limpar.")
+		}
 		return m.styles.emptyState.Render("Nenhuma branch encontrada.\nPressione 'n' para criar uma.")
 	}
 
 	hintH := 1
 	visible := max(1, h-hintH)
-	start, end := visibleWindow(m.branchIdx, len(m.branches), visible)
+	start, end := visibleWindow(m.branchIdx, len(branches), visible)
 
 	var lines []string
 	for i := start; i < end; i++ {
-		b := m.branches[i]
+		b := branches[i]
 		prefix := "  "
 		if b.IsCurrent {
 			prefix = "* "
@@ -239,7 +333,7 @@ func (m Model) renderBranchList(w, h int) string {
 			suffix += " [remota]"
 		}
 		if b.Ahead > 0 || b.Behind > 0 {
-			suffix += fmt.Sprintf(" ^%d v%d", b.Ahead, b.Behind)
+			suffix += fmt.Sprintf(" ↑%d ↓%d", b.Ahead, b.Behind)
 		}
 
 		row := truncateText(prefix+label+suffix, w)
@@ -262,23 +356,27 @@ func (m Model) renderBranchList(w, h int) string {
 	if m.includeRemote {
 		remoteState = "on"
 	}
-	hint := fmt.Sprintf("Enter:trocar  n:nova  d:excluir  m:merge  r:remotas(%s)", remoteState)
+	hint := fmt.Sprintf("Enter:trocar  n:nova  d:excluir  m:merge  r:rem(%s)  /:filtro", remoteState)
 	lines = append(lines, m.styles.itemMuted.Render(truncateText(hint, w)))
 	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderFileList(w, h int) string {
-	if len(m.files) == 0 {
+	files := m.visibleFiles()
+	if len(files) == 0 {
+		if m.filterQuery != "" && len(m.files) > 0 {
+			return m.styles.emptyState.Render("Nenhum arquivo corresponde ao filtro.\nPressione Esc para limpar.")
+		}
 		return m.styles.emptyState.Render("Nenhuma alteracao no repositorio.\nPressione 'z' para restaurar stash (pop).")
 	}
 
 	hintH := 1
 	visible := max(1, h-hintH)
-	start, end := visibleWindow(m.fileIdx, len(m.files), visible)
+	start, end := visibleWindow(m.fileIdx, len(files), visible)
 
 	var lines []string
 	for i := start; i < end; i++ {
-		f := m.files[i]
+		f := files[i]
 		badge, badgeStyle := m.fileBadge(f)
 
 		cursor := "  "
@@ -307,7 +405,57 @@ func (m Model) renderFileList(w, h int) string {
 		lines = append(lines, "")
 	}
 
-	hint := "Espaco/s:stage  c:commit  z:stash/pop  x:descartar"
+	hint := "Espaco/s:stage  Enter/d:diff  c:commit  z:stash  x:descartar"
+	lines = append(lines, m.styles.itemMuted.Render(truncateText(hint, w)))
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderCommitList(w, h int) string {
+	commits := m.visibleCommits()
+	if len(commits) == 0 {
+		if m.filterQuery != "" && len(m.commits) > 0 {
+			return m.styles.emptyState.Render("Nenhum commit corresponde ao filtro.\nPressione Esc para limpar.")
+		}
+		return m.styles.emptyState.Render("Nenhum commit encontrado nesta branch.")
+	}
+
+	hintH := 1
+	visible := max(1, h-hintH)
+	start, end := visibleWindow(m.commitIdx, len(commits), visible)
+
+	var lines []string
+	for i := start; i < end; i++ {
+		c := commits[i]
+		cursor := "  "
+		if i == m.commitIdx {
+			cursor = "> "
+		}
+
+		meta := c.RelativeDate
+		prefixText := cursor + c.Hash + " "
+		subjMax := max(8, w-len(prefixText)-len(meta)-3)
+		subj := truncateText(c.Subject, subjMax)
+
+		if i == m.commitIdx {
+			row := fmt.Sprintf("%s%s %s (%s)", cursor, c.Hash, subj, meta)
+			lines = append(lines, m.styles.itemSelected.Width(w).Render(truncateText(row, w)))
+		} else {
+			row := cursor + m.styles.commitHash.Render(c.Hash) + " " +
+				m.styles.commitSubject.Render(subj) + " " +
+				m.styles.commitMeta.Render("("+meta+")")
+			lines = append(lines, row)
+		}
+	}
+
+	for len(lines) < visible {
+		lines = append(lines, "")
+	}
+
+	refLabel := "HEAD"
+	if m.historyCustomRef != "" {
+		refLabel = m.historyCustomRef
+	}
+	hint := fmt.Sprintf("Enter/d:diff  v:revert  y:cherry-pick  b:%s  /:filtro", refLabel)
 	lines = append(lines, m.styles.itemMuted.Render(truncateText(hint, w)))
 	return strings.Join(lines, "\n")
 }
@@ -333,24 +481,39 @@ func (m Model) renderRightPane(w, h int) string {
 	var title string
 	var conflictBar string
 
-	if m.activeTab == tabBranches {
-		if len(m.branches) > 0 {
-			title = fmt.Sprintf("Commits em %s", m.branches[m.branchIdx].Name)
+	switch m.activeTab {
+	case tabBranches:
+		branches := m.visibleBranches()
+		if len(branches) > 0 {
+			title = fmt.Sprintf("Commits em %s", branches[m.branchIdx].Name)
 		} else {
 			title = "Commits"
 		}
-	} else if len(m.files) > 0 {
-		f := m.files[m.fileIdx]
-		if f.IsConflicted {
-			title = "Conflito: " + f.Path
-			conflictBar = m.styles.conflictBar.Width(innerW).Render(
-				"[1] Manter nossos (ours)   [2] Aceitar deles (theirs)   [e] Abrir no $EDITOR",
-			)
+
+	case tabChanges:
+		files := m.visibleFiles()
+		if len(files) > 0 {
+			f := files[m.fileIdx]
+			if f.IsConflicted {
+				title = "Conflito: " + f.Path
+				conflictBar = m.styles.conflictBar.Width(innerW).Render(
+					"[1] Manter nossos (ours)   [2] Aceitar deles (theirs)   [e] Abrir no $EDITOR",
+				)
+			} else {
+				title = "Diff: " + f.Path + "  (Enter/d para tela cheia estilo VS Code)"
+			}
 		} else {
-			title = "Diff: " + f.Path
+			title = "Visualizacao"
 		}
-	} else {
-		title = "Visualizacao"
+
+	case tabCommits:
+		commits := m.visibleCommits()
+		if len(commits) > 0 {
+			c := commits[m.commitIdx]
+			title = fmt.Sprintf("Commit %s: %s  (Enter/d para tela cheia)", c.Hash, c.Subject)
+		} else {
+			title = "Detalhes do Commit"
+		}
 	}
 
 	header := m.styles.repoName.Render(truncateText(title, innerW))
@@ -379,32 +542,6 @@ func (m Model) renderCommitLog() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderColorDiff(raw string) string {
-	if strings.TrimSpace(raw) == "" {
-		return m.styles.emptyState.Render("Sem diferencas para exibir.")
-	}
-	rawLines := strings.Split(raw, "\n")
-	out := make([]string, 0, len(rawLines))
-	for _, line := range rawLines {
-		switch {
-		case strings.HasPrefix(line, "diff --git"),
-			strings.HasPrefix(line, "index "),
-			strings.HasPrefix(line, "--- "),
-			strings.HasPrefix(line, "+++ "):
-			out = append(out, m.styles.diffMeta.Render(line))
-		case strings.HasPrefix(line, "@@"):
-			out = append(out, m.styles.diffHunk.Render(line))
-		case strings.HasPrefix(line, "+"):
-			out = append(out, m.styles.diffAdd.Render(line))
-		case strings.HasPrefix(line, "-"):
-			out = append(out, m.styles.diffDel.Render(line))
-		default:
-			out = append(out, m.styles.itemNormal.Render(line))
-		}
-	}
-	return strings.Join(out, "\n")
-}
-
 func (m Model) renderConflictDiff(raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return m.styles.emptyState.Render("Arquivo em conflito vazio ou binario.")
@@ -431,7 +568,7 @@ func (m Model) renderConflictDiff(raw string) string {
 			section = secNormal
 			out = append(out, m.styles.conflictTheirs.Render(line+"  [DELES / THEIRS]"))
 		case section == secOurs:
-			out = append(out, m.styles.diffAdd.Render("| "+line))
+			out = append(out, m.styles.diffAddLine.Render("| "+line))
 		case section == secTheirs:
 			out = append(out, m.styles.conflictTheirs.Render("| "+line))
 		default:
@@ -442,15 +579,79 @@ func (m Model) renderConflictDiff(raw string) string {
 }
 
 func (m Model) renderFooter() string {
+	maxW := max(20, m.width)
+
 	var top string
 	if m.errMsg != "" {
-		top = m.styles.bannerError.Render("Erro: " + m.errMsg)
+		top = m.styles.bannerError.Render(truncateText("Erro: "+m.errMsg, maxW))
 	} else if m.status != "" {
-		top = m.styles.bannerInfo.Render(m.status)
+		top = m.styles.bannerInfo.Render(truncateText(m.status, maxW))
 	} else {
-		top = m.styles.footer.Render("f:fetch  p:pull  R:atualizar  Tab:aba  J/K:rolar dir.  ?:ajuda  q:sair")
+		top = m.styles.footer.Render(truncateText("f:fetch  p:pull  P:push  /:filtrar  Enter/d:diff  Tab:aba  ?:ajuda  q:sair", maxW))
 	}
-	return truncateText(top, max(20, m.width))
+
+	cmdStr := m.lastGitCmd
+	if cmdStr == "" {
+		cmdStr = "git status --porcelain=v1 --branch"
+	}
+	avail := max(8, maxW-17)
+	bottom := m.styles.cmdBadge.Render("CMD") + " " + m.styles.cmdText.Render("Executado: "+truncateText(cmdStr, avail))
+
+	return top + "\n" + bottom
+}
+
+func (m Model) renderDiffModal() string {
+	modalW := max(40, m.width-4)
+	modalH := max(10, m.height-2)
+	innerW := max(32, modalW-4)
+
+	var title string
+	var statusTag string
+	if m.activeTab == tabChanges {
+		files := m.visibleFiles()
+		if len(files) > 0 {
+			f := files[m.fileIdx]
+			badge, _ := m.fileBadge(f)
+			title = fmt.Sprintf("Visualizador de Diff (VS Code) :: %s %s (%d/%d)", badge, f.Path, m.fileIdx+1, len(files))
+		} else {
+			title = "Visualizador de Diff"
+		}
+	} else {
+		commits := m.visibleCommits()
+		if len(commits) > 0 {
+			c := commits[m.commitIdx]
+			title = fmt.Sprintf("Visualizador de Commit :: %s - %s (%d/%d)", c.Hash, c.Subject, m.commitIdx+1, len(commits))
+		} else {
+			title = "Visualizador de Commit"
+		}
+	}
+
+	modeText := "[Unificado]"
+	if m.sideBySideDiff {
+		modeText = "[Lado a Lado]"
+	}
+	pct := int(m.diffModalViewport.ScrollPercent() * 100)
+	statusTag = fmt.Sprintf("%s  %d%%", modeText, pct)
+
+	headerLine := m.styles.modalTitle.Render(truncateText(title, max(12, innerW-len(statusTag)-2))) + "  " + m.styles.aheadBehind.Render(statusTag)
+
+	var controls string
+	if m.activeTab == tabChanges {
+		controls = "l:alternar lado-a-lado/unificado   j/k:rolar   [/]:arquivo ant/prox   Espaco/s:stage   e:$EDITOR   Esc/q:fechar"
+	} else {
+		controls = "l:alternar lado-a-lado/unificado   j/k:rolar   [/]:commit ant/prox   Esc/q:fechar"
+	}
+
+	content := strings.Join([]string{
+		headerLine,
+		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
+		m.diffModalViewport.View(),
+		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
+		m.styles.itemMuted.Render(truncateText(controls, innerW)),
+	}, "\n")
+
+	box := m.styles.paneActive.Width(modalW - 2).Height(modalH - 2).Render(content)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m Model) renderModal() string {
@@ -489,6 +690,16 @@ func (m Model) renderModal() string {
 			m.styles.modalWarn.Render(fmt.Sprintf("Descartar todas as alteracoes em '%s'?", m.modalTarget)) + "\n" +
 			"Esta acao nao pode ser desfeita.\n\n" +
 			m.styles.itemMuted.Render("Enter/s: descartar   Esc/n: cancelar")
+
+	case modalRevertCommit:
+		body = m.styles.modalTitle.Render("Reverter commit") + "\n\n" +
+			fmt.Sprintf("Criar um novo commit revertendo '%s'?", m.modalTarget) + "\n\n" +
+			m.styles.itemMuted.Render("Enter/s: reverter   Esc/n: cancelar")
+
+	case modalCherryPick:
+		body = m.styles.modalTitle.Render("Cherry-pick de commit") + "\n\n" +
+			fmt.Sprintf("Aplicar o commit '%s' na branch atual?", m.modalTarget) + "\n\n" +
+			m.styles.itemMuted.Render("Enter/s: aplicar   Esc/n: cancelar")
 
 	case modalStashSwitch:
 		opts := []string{

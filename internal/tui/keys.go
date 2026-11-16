@@ -10,25 +10,33 @@ type keyMap struct {
 	PageUp        key.Binding
 	PageDown      key.Binding
 	NextTab       key.Binding
-	Tab1          key.Binding
-	Tab2          key.Binding
-	ToggleRemotes key.Binding
-	Switch        key.Binding
-	NewBranch     key.Binding
-	DeleteBranch  key.Binding
-	MergeBranch   key.Binding
-	Stage         key.Binding
-	Commit        key.Binding
-	Stash         key.Binding
-	Discard       key.Binding
-	KeepOurs      key.Binding
-	AcceptTheirs  key.Binding
-	OpenEditor    key.Binding
-	Fetch         key.Binding
-	Pull          key.Binding
-	Refresh       key.Binding
-	Help          key.Binding
-	Quit          key.Binding
+	Tab1               key.Binding
+	Tab2               key.Binding
+	Tab3               key.Binding
+	ToggleRemotes      key.Binding
+	Switch             key.Binding
+	NewBranch          key.Binding
+	DeleteBranch       key.Binding
+	MergeBranch        key.Binding
+	Stage              key.Binding
+	Commit             key.Binding
+	Stash              key.Binding
+	Discard            key.Binding
+	ViewDiff           key.Binding
+	ToggleDiffMode     key.Binding
+	RevertCommit       key.Binding
+	CherryPick         key.Binding
+	ToggleCommitBranch key.Binding
+	KeepOurs           key.Binding
+	AcceptTheirs       key.Binding
+	OpenEditor         key.Binding
+	Filter             key.Binding
+	Fetch              key.Binding
+	Pull               key.Binding
+	Push               key.Binding
+	Refresh            key.Binding
+	Help               key.Binding
+	Quit               key.Binding
 }
 
 func defaultKeyMap() keyMap {
@@ -69,6 +77,10 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("2"),
 			key.WithHelp("2", "aba Alterações"),
 		),
+		Tab3: key.NewBinding(
+			key.WithKeys("3"),
+			key.WithHelp("3", "aba Histórico"),
+		),
 		ToggleRemotes: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "mostrar/ocultar remotas"),
@@ -105,6 +117,26 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("x"),
 			key.WithHelp("x", "descartar alterações"),
 		),
+		ViewDiff: key.NewBinding(
+			key.WithKeys("enter", "d"),
+			key.WithHelp("Enter/d", "abrir diff VS Code"),
+		),
+		ToggleDiffMode: key.NewBinding(
+			key.WithKeys("l"),
+			key.WithHelp("l", "lado a lado / unificado"),
+		),
+		RevertCommit: key.NewBinding(
+			key.WithKeys("v"),
+			key.WithHelp("v", "reverter commit"),
+		),
+		CherryPick: key.NewBinding(
+			key.WithKeys("y"),
+			key.WithHelp("y", "cherry-pick commit"),
+		),
+		ToggleCommitBranch: key.NewBinding(
+			key.WithKeys("b"),
+			key.WithHelp("b", "alternar HEAD / branch"),
+		),
 		KeepOurs: key.NewBinding(
 			key.WithKeys("1"),
 			key.WithHelp("1", "manter nossos (ours)"),
@@ -117,6 +149,10 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("e"),
 			key.WithHelp("e", "abrir no $EDITOR"),
 		),
+		Filter: key.NewBinding(
+			key.WithKeys("/"),
+			key.WithHelp("/", "filtrar itens"),
+		),
 		Fetch: key.NewBinding(
 			key.WithKeys("f"),
 			key.WithHelp("f", "fetch"),
@@ -124,6 +160,10 @@ func defaultKeyMap() keyMap {
 		Pull: key.NewBinding(
 			key.WithKeys("p"),
 			key.WithHelp("p", "pull"),
+		),
+		Push: key.NewBinding(
+			key.WithKeys("P"),
+			key.WithHelp("P", "push"),
 		),
 		Refresh: key.NewBinding(
 			key.WithKeys("R"),
@@ -141,14 +181,15 @@ func defaultKeyMap() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.NextTab, k.Up, k.Down, k.Fetch, k.Pull, k.Refresh, k.Help, k.Quit}
+	return []key.Binding{k.NextTab, k.Filter, k.ViewDiff, k.Fetch, k.Pull, k.Push, k.Help, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Top, k.Bottom, k.PageUp, k.PageDown, k.NextTab},
+		{k.Up, k.Down, k.Top, k.Bottom, k.PageUp, k.PageDown, k.NextTab, k.Filter},
 		{k.Switch, k.ToggleRemotes, k.NewBranch, k.DeleteBranch, k.MergeBranch},
-		{k.Stage, k.Commit, k.Stash, k.Discard, k.KeepOurs, k.AcceptTheirs, k.OpenEditor},
-		{k.Fetch, k.Pull, k.Refresh, k.Help, k.Quit},
+		{k.Stage, k.Commit, k.Stash, k.Discard, k.ViewDiff, k.ToggleDiffMode, k.OpenEditor},
+		{k.RevertCommit, k.CherryPick, k.ToggleCommitBranch, k.KeepOurs, k.AcceptTheirs},
+		{k.Fetch, k.Pull, k.Push, k.Refresh, k.Help, k.Quit},
 	}
 }

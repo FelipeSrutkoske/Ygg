@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,7 +21,9 @@ const (
 )
 
 type Client struct {
-	dir string
+	dir     string
+	mu      sync.Mutex
+	lastCmd string
 }
 
 func NewClient(dir string) *Client {
@@ -32,6 +35,29 @@ func NewClient(dir string) *Client {
 
 func (c *Client) Dir() string {
 	return c.dir
+}
+
+func (c *Client) LastCommand() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastCmd
+}
+
+func (c *Client) setLastCommand(args ...string) {
+	if len(args) == 0 {
+		return
+	}
+	formatted := make([]string, len(args))
+	for i, arg := range args {
+		if strings.ContainsAny(arg, " \t\n\"'") {
+			formatted[i] = strconv.Quote(arg)
+		} else {
+			formatted[i] = arg
+		}
+	}
+	c.mu.Lock()
+	c.lastCmd = "git " + strings.Join(formatted, " ")
+	c.mu.Unlock()
 }
 
 func CheckGitInstalled() error {
@@ -57,6 +83,10 @@ func (c *Client) InspectRepo(ctx context.Context) (RepoState, error) {
 		return RepoState{Kind: KindNotARepo}, nil
 	}
 
+	if c.LastCommand() == "" {
+		c.setLastCommand("status", "--porcelain=v1", "--branch")
+	}
+
 	stdout, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "status", "--porcelain=v1", "--branch", "-z", "-uall")
 	if err != nil {
 		return RepoState{}, err
@@ -72,6 +102,7 @@ func (c *Client) InspectRepo(ctx context.Context) (RepoState, error) {
 		RepoName:     filepath.Base(rootDir),
 		Kind:         header.Kind,
 		Branch:       header.Branch,
+		Upstream:     header.Upstream,
 		Ahead:        header.Ahead,
 		Behind:       header.Behind,
 		ChangedCount: len(files),
@@ -271,6 +302,7 @@ func (c *Client) SwitchBranch(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	c.setLastCommand("switch", name)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "switch", name)
 	return err
 }
@@ -283,6 +315,7 @@ func (c *Client) CreateBranch(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	c.setLastCommand("switch", "-c", name)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "switch", "-c", name)
 	return err
 }
@@ -299,6 +332,7 @@ func (c *Client) DeleteBranch(ctx context.Context, name string, force bool) erro
 	if force {
 		flag = "-D"
 	}
+	c.setLastCommand("branch", flag, name)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "branch", flag, name)
 	return err
 }
@@ -312,6 +346,7 @@ func (c *Client) MergeBranch(ctx context.Context, name string) (MergeResult, err
 		return MergeResult{}, err
 	}
 
+	c.setLastCommand("merge", "--no-edit", name)
 	stdout, stderr, mergeErr := c.runGit(ctx, rootDir, defaultLocalTimeout, "merge", "--no-edit", name)
 	combined := combineOutputs(stdout, stderr)
 	if mergeErr == nil {
@@ -346,6 +381,7 @@ func (c *Client) StageFile(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	c.setLastCommand("add", "--", path)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "add", "--", path)
 	return err
 }
@@ -360,9 +396,11 @@ func (c *Client) UnstageFile(ctx context.Context, path string) error {
 	}
 
 	if c.hasHead(ctx, rootDir) {
+		c.setLastCommand("reset", "HEAD", "--", path)
 		_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "reset", "HEAD", "--", path)
 		return err
 	}
+	c.setLastCommand("rm", "--cached", "--", path)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "rm", "--cached", "--", path)
 	return err
 }
@@ -381,6 +419,7 @@ func (c *Client) DiscardFile(ctx context.Context, file FileStatus) error {
 		if err != nil {
 			return err
 		}
+		c.setLastCommand("clean", "-f", "--", file.Path)
 		return os.RemoveAll(absPath)
 	}
 
@@ -395,6 +434,7 @@ func (c *Client) DiscardFile(ctx context.Context, file FileStatus) error {
 		return os.RemoveAll(absPath)
 	}
 
+	c.setLastCommand("checkout", "--", file.Path)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "checkout", "--", file.Path)
 	return err
 }
@@ -407,6 +447,7 @@ func (c *Client) Commit(ctx context.Context, message string) error {
 	if err != nil {
 		return err
 	}
+	c.setLastCommand("commit", "-m", message)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "commit", "-m", message)
 	return err
 }
@@ -420,6 +461,7 @@ func (c *Client) StashPush(ctx context.Context, message string) error {
 	if strings.TrimSpace(message) != "" {
 		args = append(args, "-m", message)
 	}
+	c.setLastCommand(args...)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, args...)
 	return err
 }
@@ -429,6 +471,7 @@ func (c *Client) StashPop(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.setLastCommand("stash", "pop")
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "stash", "pop")
 	return err
 }
@@ -452,6 +495,7 @@ func (c *Client) ResolveConflict(ctx context.Context, path string, side Conflict
 		return fmt.Errorf("invalid conflict side: %d", side)
 	}
 
+	c.setLastCommand("checkout", sideFlag, "--", path)
 	if _, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "checkout", sideFlag, "--", path); err != nil {
 		return err
 	}
@@ -464,6 +508,7 @@ func (c *Client) Fetch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.setLastCommand("fetch", "--prune")
 	_, _, err = c.runGit(ctx, rootDir, defaultNetworkTimeout, "fetch", "--prune")
 	return err
 }
@@ -473,7 +518,92 @@ func (c *Client) Pull(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.setLastCommand("pull")
 	_, _, err = c.runGit(ctx, rootDir, defaultNetworkTimeout, "pull")
+	return err
+}
+
+func (c *Client) Push(ctx context.Context) (string, error) {
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if err == nil {
+		c.setLastCommand("push")
+		if _, _, pushErr := c.runGit(ctx, rootDir, defaultNetworkTimeout, "push"); pushErr != nil {
+			return "", pushErr
+		}
+		return "Push concluído", nil
+	}
+
+	branchOut, _, branchErr := c.runGit(ctx, rootDir, defaultLocalTimeout, "rev-parse", "--abbrev-ref", "HEAD")
+	if branchErr != nil {
+		return "", branchErr
+	}
+	branch := strings.TrimSpace(string(branchOut))
+	if branch == "" || branch == "HEAD" {
+		return "", errors.New("HEAD destacado: não é possível fazer push sem uma branch")
+	}
+
+	c.setLastCommand("push", "-u", "origin", branch)
+	if _, _, pushErr := c.runGit(ctx, rootDir, defaultNetworkTimeout, "push", "-u", "origin", branch); pushErr != nil {
+		return "", pushErr
+	}
+	return fmt.Sprintf("Push concluído (upstream configurado: origin/%s)", branch), nil
+}
+
+func (c *Client) ShowCommit(ctx context.Context, hash string) (string, error) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return "", errors.New("commit hash cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	stdout, _, err := c.runGit(
+		ctx,
+		rootDir,
+		defaultLocalTimeout,
+		"show",
+		"--stat",
+		"--patch",
+		"--format=commit %h (%H)%nAutor: %an <%ae>%nData:  %ar%n%n    %s%n",
+		hash,
+	)
+	if err != nil {
+		return "", err
+	}
+	return truncateOutput(string(stdout), maxPreviewBytes), nil
+}
+
+func (c *Client) RevertCommit(ctx context.Context, hash string) error {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return errors.New("commit hash cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	c.setLastCommand("revert", "--no-edit", hash)
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "revert", "--no-edit", hash)
+	return err
+}
+
+func (c *Client) CherryPick(ctx context.Context, hash string) error {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return errors.New("commit hash cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	c.setLastCommand("cherry-pick", hash)
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "cherry-pick", hash)
 	return err
 }
 

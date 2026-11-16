@@ -29,6 +29,7 @@ type RepoState struct {
 	RepoName      string
 	Kind          RepoKind
 	Branch        string
+	Upstream      string
 	HeadHash      string
 	LastCommit    string
 	Ahead         int

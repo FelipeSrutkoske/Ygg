@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
@@ -11,20 +12,43 @@ import (
 
 var version = "0.1.0"
 
+const moduleInstallTarget = "github.com/FelipeSrutkoske/go-vit@latest"
+
 func printHelp() {
 	fmt.Print(`go-vit — Gerenciador visual de Git no terminal
 
 Uso:
   go-vit [caminho]
+  go-vit [comando]
   go-vit [opções]
 
+Comandos:
+  update, upgrade  Atualiza o go-vit para a versão mais recente
+
 Argumentos:
-  caminho       Diretório do repositório Git (padrão: ".")
+  caminho          Diretório do repositório Git (padrão: ".")
 
 Opções:
-  -h, --help      Exibe esta ajuda
-  -v, --version   Exibe a versão do go-vit
+  -h, --help       Exibe esta ajuda
+  -v, --version    Exibe a versão do go-vit
 `)
+}
+
+func runUpdate() error {
+	if _, err := exec.LookPath("go"); err != nil {
+		return fmt.Errorf("o Go não foi encontrado no PATH: %w\nInstale o Go (https://go.dev/dl/) para atualizar via 'go install'", err)
+	}
+
+	fmt.Printf("Atualizando go-vit (%s)...\n", moduleInstallTarget)
+	cmd := exec.Command("go", "install", moduleInstallTarget)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("falha ao atualizar o go-vit: %w", err)
+	}
+
+	fmt.Println("go-vit atualizado com sucesso!")
+	return nil
 }
 
 func main() {
@@ -38,6 +62,16 @@ func main() {
 			return
 		case "-v", "--version":
 			fmt.Printf("go-vit v%s\n", version)
+			return
+		case "update", "upgrade":
+			if len(os.Args) > 2 {
+				fmt.Fprintf(os.Stderr, "Uso inválido: '%s' não aceita argumentos extras.\n", arg)
+				os.Exit(1)
+			}
+			if err := runUpdate(); err != nil {
+				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		default:
 			if len(arg) > 0 && arg[0] == '-' {

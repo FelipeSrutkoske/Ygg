@@ -450,4 +450,132 @@ func TestFetchAndPull_LocalBareRemote(t *testing.T) {
 	if state.Behind != 0 || state.LastCommit != "c2" {
 		t.Errorf("unexpected state after pull: %+v", state)
 	}
+	if state.Upstream != "origin/main" {
+		t.Errorf("Upstream = %q, want origin/main", state.Upstream)
+	}
+}
+
+func TestPush_WithAndWithoutUpstream_AndLastCommand(t *testing.T) {
+	ctx := context.Background()
+	bare := t.TempDir()
+	runGitTest(t, bare, "init", "--bare", "-b", "main")
+
+	repo := initTestRepo(t)
+	runGitTest(t, repo, "remote", "add", "origin", bare)
+	writeTestFile(t, repo, "a.txt", "v1\n")
+	runGitTest(t, repo, "add", ".")
+	runGitTest(t, repo, "commit", "-m", "c1")
+
+	client := NewClient(repo)
+	if _, err := client.InspectRepo(ctx); err != nil {
+		t.Fatalf("InspectRepo: %v", err)
+	}
+	if got := client.LastCommand(); got != "git status --porcelain=v1 --branch" {
+		t.Errorf("initial LastCommand = %q", got)
+	}
+
+	// First push without upstream -> should push -u origin main
+	msg, err := client.Push(ctx)
+	if err != nil {
+		t.Fatalf("Push without upstream: %v", err)
+	}
+	if !strings.Contains(msg, "origin/main") {
+		t.Errorf("expected upstream message, got %q", msg)
+	}
+	if got := client.LastCommand(); got != "git push -u origin main" {
+		t.Errorf("LastCommand after first push = %q", got)
+	}
+
+	// Second commit + push with upstream already configured
+	writeTestFile(t, repo, "a.txt", "v2\n")
+	if err := client.StageFile(ctx, "a.txt"); err != nil {
+		t.Fatalf("StageFile: %v", err)
+	}
+	if got := client.LastCommand(); got != "git add -- a.txt" {
+		t.Errorf("LastCommand after stage = %q", got)
+	}
+	if err := client.Commit(ctx, "second commit"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if got := client.LastCommand(); got != `git commit -m "second commit"` {
+		t.Errorf("LastCommand after commit = %q", got)
+	}
+
+	state, err := client.InspectRepo(ctx)
+	if err != nil {
+		t.Fatalf("InspectRepo: %v", err)
+	}
+	if state.Ahead != 1 || state.Upstream != "origin/main" {
+		t.Errorf("expected Ahead=1 Upstream=origin/main, got %+v", state)
+	}
+
+	msg, err = client.Push(ctx)
+	if err != nil {
+		t.Fatalf("Push with upstream: %v", err)
+	}
+	if msg != "Push concluído" {
+		t.Errorf("unexpected push message: %q", msg)
+	}
+	if got := client.LastCommand(); got != "git push" {
+		t.Errorf("LastCommand after push = %q", got)
+	}
+}
+
+func TestShowCommit_RevertAndCherryPick(t *testing.T) {
+	ctx := context.Background()
+	dir := initTestRepo(t)
+	writeTestFile(t, dir, "app.txt", "line1\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "initial")
+
+	client := NewClient(dir)
+	if err := client.CreateBranch(ctx, "feat"); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	writeTestFile(t, dir, "feat.txt", "hello feat\n")
+	if err := client.StageFile(ctx, "feat.txt"); err != nil {
+		t.Fatalf("StageFile: %v", err)
+	}
+	if err := client.Commit(ctx, "add feat"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	featCommits, err := client.ListCommits(ctx, "feat", 5)
+	if err != nil || len(featCommits) == 0 {
+		t.Fatalf("ListCommits feat: %v", err)
+	}
+	featHash := featCommits[0].Hash
+
+	diff, err := client.ShowCommit(ctx, featHash)
+	if err != nil {
+		t.Fatalf("ShowCommit: %v", err)
+	}
+	if !strings.Contains(diff, "add feat") || !strings.Contains(diff, "+hello feat") {
+		t.Errorf("unexpected ShowCommit output:\n%s", diff)
+	}
+
+	if err := client.SwitchBranch(ctx, "main"); err != nil {
+		t.Fatalf("SwitchBranch main: %v", err)
+	}
+	if err := client.CherryPick(ctx, featHash); err != nil {
+		t.Fatalf("CherryPick: %v", err)
+	}
+	if got := client.LastCommand(); got != "git cherry-pick "+featHash {
+		t.Errorf("LastCommand after cherry-pick = %q", got)
+	}
+
+	mainCommits, err := client.ListCommits(ctx, "main", 5)
+	if err != nil || len(mainCommits) < 2 || mainCommits[0].Subject != "add feat" {
+		t.Fatalf("expected cherry-picked commit on main, got %+v (err=%v)", mainCommits, err)
+	}
+
+	if err := client.RevertCommit(ctx, mainCommits[0].Hash); err != nil {
+		t.Fatalf("RevertCommit: %v", err)
+	}
+	if got := client.LastCommand(); got != "git revert --no-edit "+mainCommits[0].Hash {
+		t.Errorf("LastCommand after revert = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "feat.txt")); !os.IsNotExist(err) {
+		t.Errorf("expected feat.txt to be removed after revert")
+	}
 }
