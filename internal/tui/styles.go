@@ -14,6 +14,8 @@ type styles struct {
 	detachedBadge   lipgloss.Style
 	unbornBadge     lipgloss.Style
 	aheadBehind     lipgloss.Style
+	pushBadge       lipgloss.Style
+	pullBadge       lipgloss.Style
 	statusClean     lipgloss.Style
 	statusDirty     lipgloss.Style
 	statusConflict  lipgloss.Style
@@ -95,6 +97,16 @@ func defaultStyles() styles {
 		aheadBehind: lipgloss.NewStyle().
 			Foreground(charmtone.Malibu).
 			Bold(true),
+		pushBadge: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Pepper).
+			Background(charmtone.Guac).
+			Padding(0, 1),
+		pullBadge: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Pepper).
+			Background(charmtone.Mustard).
+			Padding(0, 1),
 		statusClean: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(charmtone.Pepper).

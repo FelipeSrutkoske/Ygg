@@ -188,7 +188,7 @@ func TestHeaderAndFooter_UpstreamAndCommandPreview(t *testing.T) {
 	m = updated.(Model)
 
 	header := m.renderHeader()
-	for _, want := range []string{"origin/main", "↑2", "↓1"} {
+	for _, want := range []string{"origin/main", "↑2 push (P)", "↓1 pull (p)"} {
 		if !strings.Contains(header, want) {
 			t.Errorf("header missing %q:\n%s", want, header)
 		}

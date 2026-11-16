@@ -210,14 +210,14 @@ func (m Model) renderHeader() string {
 
 	var syncParts []string
 	if m.state.Ahead > 0 {
-		syncParts = append(syncParts, fmt.Sprintf("↑%d", m.state.Ahead))
+		syncParts = append(syncParts, m.styles.pushBadge.Render(fmt.Sprintf("↑%d push (P)", m.state.Ahead)))
 	}
 	if m.state.Behind > 0 {
-		syncParts = append(syncParts, fmt.Sprintf("↓%d", m.state.Behind))
+		syncParts = append(syncParts, m.styles.pullBadge.Render(fmt.Sprintf("↓%d pull (p)", m.state.Behind)))
 	}
 	syncStr := ""
 	if len(syncParts) > 0 {
-		syncStr = " " + m.styles.aheadBehind.Render(strings.Join(syncParts, " "))
+		syncStr = " " + strings.Join(syncParts, " ")
 	}
 
 	var statusBadge string
