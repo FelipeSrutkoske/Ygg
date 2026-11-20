@@ -187,3 +187,19 @@ func TestParseCommits(t *testing.T) {
 		t.Errorf("commits[1] unexpected: %+v", commits[1])
 	}
 }
+
+func TestParseCommits_StripsNewlinesBetweenRecords(t *testing.T) {
+	raw := "111aaaa\x1ffirst commit\x1fAlice\x1f1 day ago\x00\n" +
+		"222bbbb\x1fsecond commit\x1fBob\x1f3 hours ago\x00\n" +
+		"333cccc\x1fthird commit\x1fCarol\x1f10 mins ago\x00\n"
+	commits := parseCommits([]byte(raw))
+	if len(commits) != 3 {
+		t.Fatalf("got %d commits, want 3", len(commits))
+	}
+	wantHashes := []string{"111aaaa", "222bbbb", "333cccc"}
+	for i, want := range wantHashes {
+		if commits[i].Hash != want {
+			t.Errorf("commits[%d].Hash = %q, want %q", i, commits[i].Hash, want)
+		}
+	}
+}

@@ -252,13 +252,16 @@ func (m Model) renderHeader() string {
 
 func (m Model) renderTabsRow(innerW int) string {
 	changesLabelFull := "[2] Alteracoes"
-	changesLabelShort := "[2] Alt"
+	changesLabelShort := "[2] Change"
+	changesLabelCompact := "[2]Change"
 	if m.state.ConflictCount > 0 {
 		changesLabelFull = fmt.Sprintf("[2] Alteracoes (%d!)", m.state.ConflictCount)
-		changesLabelShort = fmt.Sprintf("[2] Alt(%d!)", m.state.ConflictCount)
+		changesLabelShort = fmt.Sprintf("[2] Change(%d!)", m.state.ConflictCount)
+		changesLabelCompact = fmt.Sprintf("[2]Change(%d!)", m.state.ConflictCount)
 	} else if len(m.files) > 0 {
 		changesLabelFull = fmt.Sprintf("[2] Alteracoes (%d)", len(m.files))
-		changesLabelShort = fmt.Sprintf("[2] Alt(%d)", len(m.files))
+		changesLabelShort = fmt.Sprintf("[2] Change(%d)", len(m.files))
+		changesLabelCompact = fmt.Sprintf("[2]Change(%d)", len(m.files))
 	}
 
 	buildRow := func(l1, l2, l3 string, compact bool) string {
@@ -288,7 +291,7 @@ func (m Model) renderTabsRow(innerW int) string {
 	if lipgloss.Width(row) <= innerW {
 		return row
 	}
-	row = buildRow("[1]Br", changesLabelShort, "[3]Hist", true)
+	row = buildRow("[1]Br", changesLabelCompact, "[3]Hist", true)
 	return clampSingleLine(row, innerW)
 }
 
@@ -474,8 +477,9 @@ func (m Model) renderCommitList(w, h int) string {
 			cursor = "> "
 		}
 
+		hash := sanitizeSingleLine(strings.TrimSpace(c.Hash))
 		meta := sanitizeSingleLine(c.RelativeDate)
-		prefixText := cursor + c.Hash + " "
+		prefixText := cursor + hash + " "
 		metaSuffix := " (" + meta + ")"
 		avail := w - lipgloss.Width(prefixText) - lipgloss.Width(metaSuffix)
 
@@ -483,20 +487,20 @@ func (m Model) renderCommitList(w, h int) string {
 		if avail >= 4 {
 			subj := truncateText(c.Subject, avail)
 			if i == m.commitIdx {
-				row := fmt.Sprintf("%s%s %s%s", cursor, c.Hash, subj, metaSuffix)
+				row := fmt.Sprintf("%s%s %s%s", cursor, hash, subj, metaSuffix)
 				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
 			} else {
-				rendered = cursor + m.styles.commitHash.Render(c.Hash) + " " +
+				rendered = cursor + m.styles.commitHash.Render(hash) + " " +
 					m.styles.commitSubject.Render(subj) +
 					m.styles.commitMeta.Render(metaSuffix)
 			}
 		} else {
 			subj := truncateText(c.Subject, max(1, w-lipgloss.Width(prefixText)))
 			if i == m.commitIdx {
-				row := fmt.Sprintf("%s%s %s", cursor, c.Hash, subj)
+				row := fmt.Sprintf("%s%s %s", cursor, hash, subj)
 				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
 			} else {
-				rendered = cursor + m.styles.commitHash.Render(c.Hash) + " " +
+				rendered = cursor + m.styles.commitHash.Render(hash) + " " +
 					m.styles.commitSubject.Render(subj)
 			}
 		}
@@ -568,7 +572,7 @@ func (m Model) renderRightPane(w, h int) string {
 		commits := m.visibleCommits()
 		if len(commits) > 0 {
 			c := commits[m.commitIdx]
-			title = fmt.Sprintf("Commit %s: %s  (Enter/d para tela cheia)", c.Hash, c.Subject)
+			title = fmt.Sprintf("Commit %s: %s  (Enter/d para tela cheia)", strings.TrimSpace(c.Hash), c.Subject)
 		} else {
 			title = "Detalhes do Commit"
 		}
@@ -594,10 +598,11 @@ func (m Model) renderCommitLog(width int) string {
 
 	var lines []string
 	for _, c := range m.commits {
+		hash := sanitizeSingleLine(strings.TrimSpace(c.Hash))
 		author := sanitizeSingleLine(c.Author)
 		relDate := sanitizeSingleLine(c.RelativeDate)
 		metaText := fmt.Sprintf("(%s, %s)", author, relDate)
-		hashW := lipgloss.Width(c.Hash)
+		hashW := lipgloss.Width(hash)
 		metaW := lipgloss.Width(metaText)
 
 		avail := width - hashW - 1 - 1 - metaW
@@ -605,14 +610,14 @@ func (m Model) renderCommitLog(width int) string {
 		if avail >= 6 {
 			subj := truncateText(c.Subject, avail)
 			line = fmt.Sprintf("%s %s %s",
-				m.styles.commitHash.Render(c.Hash),
+				m.styles.commitHash.Render(hash),
 				m.styles.commitSubject.Render(subj),
 				m.styles.commitMeta.Render(metaText),
 			)
 		} else {
 			subj := truncateText(c.Subject, max(1, width-hashW-1))
 			line = fmt.Sprintf("%s %s",
-				m.styles.commitHash.Render(c.Hash),
+				m.styles.commitHash.Render(hash),
 				m.styles.commitSubject.Render(subj),
 			)
 		}

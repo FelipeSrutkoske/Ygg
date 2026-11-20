@@ -163,8 +163,9 @@ func (c *Client) ListCommits(ctx context.Context, ref string, limit int) ([]Comm
 
 	args := []string{
 		"log",
+		"-z",
 		"-n", strconv.Itoa(limit),
-		"--format=%h\x1f%s\x1f%an%x1f%ar%x00",
+		"--format=%h%x1f%s%x1f%an%x1f%ar",
 	}
 	if strings.TrimSpace(ref) != "" {
 		args = append(args, ref)

@@ -198,6 +198,7 @@ func parseCommits(data []byte) []Commit {
 	records := bytes.Split(data, []byte{0})
 	var commits []Commit
 	for _, rec := range records {
+		rec = bytes.Trim(rec, "\r\n")
 		if len(rec) == 0 {
 			continue
 		}
@@ -206,10 +207,10 @@ func parseCommits(data []byte) []Commit {
 			continue
 		}
 		commits = append(commits, Commit{
-			Hash:         fields[0],
-			Subject:      fields[1],
-			Author:       fields[2],
-			RelativeDate: fields[3],
+			Hash:         strings.TrimSpace(fields[0]),
+			Subject:      strings.TrimRight(fields[1], "\r\n"),
+			Author:       strings.TrimSpace(fields[2]),
+			RelativeDate: strings.TrimSpace(fields[3]),
 		})
 	}
 	return commits

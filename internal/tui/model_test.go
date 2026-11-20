@@ -375,3 +375,29 @@ index 1111111..2222222 100644
 		}
 	}
 }
+
+func TestCommitList_AllRowsVisibleAndTabLabel(t *testing.T) {
+	m := setupLoadedTestModel()
+	m.commits = []git.Commit{
+		{Hash: "aaa1111", Subject: "first", Author: "Alice", RelativeDate: "1m ago"},
+		{Hash: "\nbbb2222", Subject: "second", Author: "Bob", RelativeDate: "2m ago"},
+		{Hash: "\r\nccc3333", Subject: "third", Author: "Carol", RelativeDate: "3m ago"},
+	}
+	m.activeTab = tabCommits
+	m.commitIdx = 2
+
+	renderedList := ansiSeqRe.ReplaceAllString(m.renderCommitList(60, 10), "")
+	for _, want := range []string{"aaa1111", "bbb2222", "ccc3333"} {
+		if !strings.Contains(renderedList, want) {
+			t.Errorf("renderCommitList missing hash %q:\n%s", want, renderedList)
+		}
+	}
+
+	tabsRow := ansiSeqRe.ReplaceAllString(m.renderTabsRow(40), "")
+	if !strings.Contains(tabsRow, "[2] Change") {
+		t.Errorf("expected '[2] Change' in tabs row, got %q", tabsRow)
+	}
+	if strings.Contains(tabsRow, "[2] Alt") {
+		t.Errorf("unexpected '[2] Alt' in tabs row, got %q", tabsRow)
+	}
+}
