@@ -159,6 +159,11 @@ func parseHunkHeader(line string) (oldStart, newStart int, ok bool) {
 	return oldStart, newStart, gotOld && gotNew
 }
 
+func sanitizeDiffText(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.ReplaceAll(s, "\t", "    ")
+}
+
 func renderDiffSummaryBar(added, removed int, modeLabel string, st styles) string {
 	addBadge := st.diffStatAdd.Render(fmt.Sprintf("+%d", added))
 	delBadge := st.diffStatDel.Render(fmt.Sprintf("-%d", removed))
@@ -173,39 +178,46 @@ func renderVSCodeUnifiedDiff(raw string, width int, st styles) string {
 		return st.emptyState.Render("Sem alteracoes para exibir.")
 	}
 
-	width = max(36, width)
+	width = max(16, width)
 	parsed := parseUnifiedDiff(raw)
 	out := make([]string, 0, len(parsed.lines)+2)
-	out = append(out, renderDiffSummaryBar(parsed.added, parsed.removed, "Visualizacao Unificada", st))
+	summary := lipgloss.NewStyle().MaxWidth(width).MaxHeight(1).Render(
+		renderDiffSummaryBar(parsed.added, parsed.removed, "Visualizacao Unificada", st),
+	)
+	out = append(out, summary)
 	out = append(out, st.itemMuted.Render(strings.Repeat("-", width)))
 
-	// 4 (old) + 1 + 4 (new) + 1 = 10 chars for line numbers, 2 chars for gutter
-	const numWidth = 10
 	const gutterWidth = 2
-	codeW := max(12, width-numWidth-gutterWidth)
 
 	for _, dl := range parsed.lines {
+		text := sanitizeDiffText(dl.text)
 		switch dl.kind {
 		case lineMeta:
-			out = append(out, st.diffMeta.Render(fitRunesWidth(dl.text, width)))
+			out = append(out, st.diffMeta.Render(fitRunesWidth(text, width)))
 		case lineHeader:
-			out = append(out, renderDiffHeaderLine(dl.text, width, st))
+			out = append(out, renderDiffHeaderLine(text, width, st))
 		case lineHunk:
-			out = append(out, st.diffHunk.Render(fitRunesWidth(dl.text, width)))
+			out = append(out, st.diffHunk.Render(fitRunesWidth(text, width)))
 		case lineAdd:
-			nums := st.diffLineNum.Render(fmt.Sprintf("     %4d ", dl.newNum))
+			numStr := fmt.Sprintf("     %4d ", dl.newNum)
+			nums := st.diffLineNum.Render(numStr)
 			gutter := st.diffAddGutter.Render("┃+")
-			code := st.diffAddLine.Render(padRightDisplayWidth(" "+dl.text, codeW))
+			lineCodeW := max(1, width-lipgloss.Width(numStr)-gutterWidth)
+			code := st.diffAddLine.Render(padRightDisplayWidth(fitRunesWidth(" "+text, lineCodeW), lineCodeW))
 			out = append(out, nums+gutter+code)
 		case lineDel:
-			nums := st.diffLineNum.Render(fmt.Sprintf("%4d      ", dl.oldNum))
+			numStr := fmt.Sprintf("%4d      ", dl.oldNum)
+			nums := st.diffLineNum.Render(numStr)
 			gutter := st.diffDelGutter.Render("┃-")
-			code := st.diffDelLine.Render(padRightDisplayWidth(" "+dl.text, codeW))
+			lineCodeW := max(1, width-lipgloss.Width(numStr)-gutterWidth)
+			code := st.diffDelLine.Render(padRightDisplayWidth(fitRunesWidth(" "+text, lineCodeW), lineCodeW))
 			out = append(out, nums+gutter+code)
 		case lineContext:
-			nums := st.diffLineNum.Render(fmt.Sprintf("%4d %4d ", dl.oldNum, dl.newNum))
+			numStr := fmt.Sprintf("%4d %4d ", dl.oldNum, dl.newNum)
+			nums := st.diffLineNum.Render(numStr)
 			gutter := st.diffLineNum.Render("│ ")
-			code := st.itemNormal.Render(fitRunesWidth(" "+dl.text, codeW))
+			lineCodeW := max(1, width-lipgloss.Width(numStr)-gutterWidth)
+			code := st.itemNormal.Render(fitRunesWidth(" "+text, lineCodeW))
 			out = append(out, nums+gutter+code)
 		}
 	}
@@ -218,34 +230,39 @@ func renderVSCodeSideBySideDiff(raw string, width int, st styles) string {
 		return st.emptyState.Render("Sem alteracoes para exibir.")
 	}
 
-	width = max(54, width)
-	colW := max(22, (width-3)/2)
+	width = max(24, width)
+	colW := max(10, (width-3)/2)
+	totalW := min(width, colW*2+3)
 
 	parsed := parseUnifiedDiff(raw)
 	out := make([]string, 0, len(parsed.lines)+4)
-	out = append(out, renderDiffSummaryBar(parsed.added, parsed.removed, "Visualizacao Lado a Lado (VS Code)", st))
+	summary := lipgloss.NewStyle().MaxWidth(width).MaxHeight(1).Render(
+		renderDiffSummaryBar(parsed.added, parsed.removed, "Visualizacao Lado a Lado (VS Code)", st),
+	)
+	out = append(out, summary)
 
 	leftHdr := st.diffMeta.Render(padRightDisplayWidth("Original (Antes)", colW))
 	rightHdr := st.diffMeta.Render(padRightDisplayWidth("Modificado (Depois)", colW))
 	sep := st.diffLineNum.Render(" │ ")
 	out = append(out, leftHdr+sep+rightHdr)
-	out = append(out, st.itemMuted.Render(strings.Repeat("-", colW*2+3)))
+	out = append(out, st.itemMuted.Render(strings.Repeat("-", totalW)))
 
 	renderLeftCell := func(dl *diffLine) string {
 		if dl == nil {
 			return st.diffLineNum.Render(strings.Repeat(" ", colW))
 		}
-		codeW := max(8, colW-7) // "%4d " (5) + "┃-" or "│ " (2)
+		text := sanitizeDiffText(dl.text)
+		numStr := fmt.Sprintf("%4d ", dl.oldNum)
+		codeW := max(1, colW-lipgloss.Width(numStr)-2)
+		num := st.diffLineNum.Render(numStr)
 		switch dl.kind {
 		case lineDel:
-			num := st.diffLineNum.Render(fmt.Sprintf("%4d ", dl.oldNum))
 			gutter := st.diffDelGutter.Render("┃-")
-			code := st.diffDelLine.Render(padRightDisplayWidth(" "+dl.text, codeW))
+			code := st.diffDelLine.Render(padRightDisplayWidth(" "+text, codeW))
 			return num + gutter + code
 		default:
-			num := st.diffLineNum.Render(fmt.Sprintf("%4d ", dl.oldNum))
 			gutter := st.diffLineNum.Render("│ ")
-			code := st.itemNormal.Render(padRightDisplayWidth(" "+dl.text, codeW))
+			code := st.itemNormal.Render(padRightDisplayWidth(" "+text, codeW))
 			return num + gutter + code
 		}
 	}
@@ -254,17 +271,18 @@ func renderVSCodeSideBySideDiff(raw string, width int, st styles) string {
 		if dl == nil {
 			return st.diffLineNum.Render(strings.Repeat(" ", colW))
 		}
-		codeW := max(8, colW-7)
+		text := sanitizeDiffText(dl.text)
+		numStr := fmt.Sprintf("%4d ", dl.newNum)
+		codeW := max(1, colW-lipgloss.Width(numStr)-2)
+		num := st.diffLineNum.Render(numStr)
 		switch dl.kind {
 		case lineAdd:
-			num := st.diffLineNum.Render(fmt.Sprintf("%4d ", dl.newNum))
 			gutter := st.diffAddGutter.Render("┃+")
-			code := st.diffAddLine.Render(padRightDisplayWidth(" "+dl.text, codeW))
+			code := st.diffAddLine.Render(padRightDisplayWidth(" "+text, codeW))
 			return num + gutter + code
 		default:
-			num := st.diffLineNum.Render(fmt.Sprintf("%4d ", dl.newNum))
 			gutter := st.diffLineNum.Render("│ ")
-			code := st.itemNormal.Render(padRightDisplayWidth(" "+dl.text, codeW))
+			code := st.itemNormal.Render(padRightDisplayWidth(" "+text, codeW))
 			return num + gutter + code
 		}
 	}
@@ -274,13 +292,13 @@ func renderVSCodeSideBySideDiff(raw string, width int, st styles) string {
 		dl := lines[i]
 		switch dl.kind {
 		case lineMeta:
-			out = append(out, st.diffMeta.Render(fitRunesWidth(dl.text, colW*2+3)))
+			out = append(out, st.diffMeta.Render(fitRunesWidth(sanitizeDiffText(dl.text), totalW)))
 			i++
 		case lineHeader:
-			out = append(out, renderDiffHeaderLine(dl.text, colW*2+3, st))
+			out = append(out, renderDiffHeaderLine(dl.text, totalW, st))
 			i++
 		case lineHunk:
-			out = append(out, st.diffHunk.Render(fitRunesWidth(dl.text, colW*2+3)))
+			out = append(out, st.diffHunk.Render(fitRunesWidth(sanitizeDiffText(dl.text), totalW)))
 			i++
 		case lineContext:
 			c := dl
@@ -317,7 +335,7 @@ func renderVSCodeSideBySideDiff(raw string, width int, st styles) string {
 }
 
 func renderDiffHeaderLine(line string, width int, st styles) string {
-	trimmed := fitRunesWidth(line, width)
+	trimmed := fitRunesWidth(sanitizeDiffText(line), width)
 	switch {
 	case strings.HasPrefix(line, "commit "):
 		return st.commitHash.Render(trimmed)

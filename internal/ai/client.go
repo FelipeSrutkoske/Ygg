@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultBaseURL = "https://integrate.api.nvidia.com/v1/chat/completions"
-	defaultMaxDiff = 12000
+	defaultMaxDiff = 8000
 	httpTimeout    = 30 * time.Second
 )
 
@@ -48,10 +48,11 @@ func NewClient(apiKey, model string) *Client {
 }
 
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
+	Model              string         `json:"model"`
+	Messages           []chatMessage  `json:"messages"`
+	Temperature        float64        `json:"temperature"`
+	MaxTokens          int            `json:"max_tokens"`
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type chatMessage struct {
@@ -61,7 +62,8 @@ type chatMessage struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -84,15 +86,18 @@ func (c *Client) GenerateCommitMessage(ctx context.Context, stagedDiff string) (
 		Messages: []chatMessage{
 			{
 				Role: "system",
-				Content: "Você é um assistente especialista em Git. Gere APENAS uma mensagem de commit curta e clara no padrão Conventional Commits (ex: feat:, fix:, refactor:, docs:, test:, chore:, build:) em português, com no máximo 72 caracteres na primeira linha. Não use crases, aspas, explicações ou blocos de código.",
+				Content: "You are an expert Git assistant. Generate ONLY a single-line Conventional Commit message in English without a scope (e.g. feat: ..., fix: ..., refactor: ...). Do NOT include a scope in parentheses. Be specific about what changed and why based on the diff (include key symbol, file, or behavior names). Keep it under 90 characters. Do not use backticks, quotes, explanations, or markdown.",
 			},
 			{
 				Role:    "user",
-				Content: "Gere a mensagem de commit para o seguinte git diff:\n\n" + cleaned,
+				Content: "Generate the commit message for this git diff:\n\n" + cleaned,
 			},
 		},
 		Temperature: 0.2,
-		MaxTokens:   1024,
+		MaxTokens:   200,
+		ChatTemplateKwargs: map[string]any{
+			"enable_thinking": false,
+		},
 	}
 
 	payload, err := json.Marshal(reqBody)
@@ -137,7 +142,7 @@ func (c *Client) GenerateCommitMessage(ctx context.Context, stagedDiff string) (
 
 	msg := sanitizeCommitMessage(parsed.Choices[0].Message.Content)
 	if msg == "" {
-		return "", errors.New("a API retornou uma mensagem vazia")
+		return "", fmt.Errorf("a API retornou uma mensagem vazia (finish_reason=%s)", parsed.Choices[0].FinishReason)
 	}
 	return msg, nil
 }

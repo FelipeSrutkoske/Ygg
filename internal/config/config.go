@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultAIModel = "nvidia/nemotron-3.5-lightning-30b-a3b"
+	DefaultAIModel = "minimaxai/minimax-m3.1-flash"
 	appDirName     = "go-vit"
 	configFileName = "config.json"
 )

@@ -508,6 +508,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.refreshSelectionCmd()
 		case tabChanges:
 			m.activeTab = tabCommits
+			m.syncRightPane()
 			return m, loadCommitsCmd(m.client, m.historyRef())
 		default:
 			m.activeTab = tabBranches
@@ -528,6 +529,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Tab3):
 		if m.activeTab != tabCommits {
 			m.activeTab = tabCommits
+			m.syncRightPane()
 			return m, loadCommitsCmd(m.client, m.historyRef())
 		}
 		return m, nil

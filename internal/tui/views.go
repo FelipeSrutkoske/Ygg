@@ -42,10 +42,11 @@ func (m *Model) resizeViewport() {
 	}
 	_, _, rightW, rightH := m.paneDimensions()
 	vpW := max(16, rightW-4)
-	vpH := max(3, rightH-4)
+	innerH := max(3, rightH-2)
+	vpH := max(1, innerH-1)
 	files := m.visibleFiles()
 	if m.activeTab == tabChanges && len(files) > 0 && files[m.fileIdx].IsConflicted {
-		vpH = max(2, vpH-2)
+		vpH = max(1, innerH-2)
 	}
 	m.viewport.SetWidth(vpW)
 	m.viewport.SetHeight(vpH)
@@ -78,27 +79,28 @@ func (m *Model) paneDimensions() (leftW, leftH, rightW, rightH int) {
 
 func (m *Model) syncRightPane() {
 	m.resizeViewport()
+	vpW := max(16, m.viewport.Width())
 	switch m.activeTab {
 	case tabBranches:
-		m.viewport.SetContent(m.renderCommitLog())
+		m.viewport.SetContent(m.renderCommitLog(vpW))
 		m.viewport.GotoTop()
 
 	case tabChanges:
 		files := m.visibleFiles()
 		if len(files) == 0 {
 			if m.filterQuery != "" && len(m.files) > 0 {
-				m.viewport.SetContent(m.styles.emptyState.Render("Nenhum arquivo corresponde ao filtro atual."))
+				m.viewport.SetContent(m.styles.emptyState.Width(vpW).Render("Nenhum arquivo corresponde ao filtro atual."))
 			} else {
-				m.viewport.SetContent(m.styles.emptyState.Render("Nenhuma alteracao pendente. O diretorio de trabalho esta limpo."))
+				m.viewport.SetContent(m.styles.emptyState.Width(vpW).Render("Nenhuma alteracao pendente. O diretorio de trabalho esta limpo."))
 			}
 			m.viewport.GotoTop()
 			return
 		}
 		f := files[m.fileIdx]
 		if f.IsConflicted {
-			m.viewport.SetContent(m.renderConflictDiff(m.diffText))
+			m.viewport.SetContent(m.renderConflictDiff(m.diffText, vpW))
 		} else {
-			m.viewport.SetContent(renderVSCodeUnifiedDiff(m.diffText, max(36, m.viewport.Width()), m.styles))
+			m.viewport.SetContent(renderVSCodeUnifiedDiff(m.diffText, vpW, m.styles))
 		}
 		m.viewport.GotoTop()
 
@@ -106,21 +108,21 @@ func (m *Model) syncRightPane() {
 		commits := m.visibleCommits()
 		if len(commits) == 0 {
 			if m.filterQuery != "" && len(m.commits) > 0 {
-				m.viewport.SetContent(m.styles.emptyState.Render("Nenhum commit corresponde ao filtro atual."))
+				m.viewport.SetContent(m.styles.emptyState.Width(vpW).Render("Nenhum commit corresponde ao filtro atual."))
 			} else {
-				m.viewport.SetContent(m.styles.emptyState.Render("Nenhum commit encontrado nesta branch."))
+				m.viewport.SetContent(m.styles.emptyState.Width(vpW).Render("Nenhum commit encontrado nesta branch."))
 			}
 			m.viewport.GotoTop()
 			return
 		}
-		m.viewport.SetContent(renderVSCodeUnifiedDiff(m.commitDiffText, max(36, m.viewport.Width()), m.styles))
+		m.viewport.SetContent(renderVSCodeUnifiedDiff(m.commitDiffText, vpW, m.styles))
 		m.viewport.GotoTop()
 	}
 }
 
 func (m *Model) syncDiffModal() {
 	m.resizeViewport()
-	vpW := max(36, m.diffModalViewport.Width())
+	vpW := max(16, m.diffModalViewport.Width())
 
 	if m.activeTab == tabChanges {
 		files := m.visibleFiles()
@@ -129,7 +131,7 @@ func (m *Model) syncDiffModal() {
 			return
 		}
 		if files[m.fileIdx].IsConflicted {
-			m.diffModalViewport.SetContent(m.renderConflictDiff(m.diffText))
+			m.diffModalViewport.SetContent(m.renderConflictDiff(m.diffText, vpW))
 			return
 		}
 		if m.sideBySideDiff {
@@ -243,45 +245,69 @@ func (m Model) renderHeader() string {
 		left += "  " + m.spinner.View()
 	}
 
-	innerW := max(20, m.width-4)
-	return m.styles.headerBox.Width(innerW).Render(left)
+	boxW := max(24, m.width)
+	innerW := max(20, boxW-4)
+	return m.styles.headerBox.Width(boxW).Height(3).Render(clampSingleLine(left, innerW))
+}
+
+func (m Model) renderTabsRow(innerW int) string {
+	changesLabelFull := "[2] Alteracoes"
+	changesLabelShort := "[2] Alt"
+	if m.state.ConflictCount > 0 {
+		changesLabelFull = fmt.Sprintf("[2] Alteracoes (%d!)", m.state.ConflictCount)
+		changesLabelShort = fmt.Sprintf("[2] Alt(%d!)", m.state.ConflictCount)
+	} else if len(m.files) > 0 {
+		changesLabelFull = fmt.Sprintf("[2] Alteracoes (%d)", len(m.files))
+		changesLabelShort = fmt.Sprintf("[2] Alt(%d)", len(m.files))
+	}
+
+	buildRow := func(l1, l2, l3 string, compact bool) string {
+		active := m.styles.tabActive
+		inactive := m.styles.tabInactive
+		if compact {
+			active = active.Padding(0, 0)
+			inactive = inactive.Padding(0, 0)
+		}
+		t1, t2, t3 := inactive.Render(l1), inactive.Render(l2), inactive.Render(l3)
+		switch m.activeTab {
+		case tabBranches:
+			t1 = active.Render(l1)
+		case tabChanges:
+			t2 = active.Render(l2)
+		case tabCommits:
+			t3 = active.Render(l3)
+		}
+		return t1 + " " + t2 + " " + t3
+	}
+
+	row := buildRow("[1] Branches", changesLabelFull, "[3] Historico", false)
+	if lipgloss.Width(row) <= innerW {
+		return row
+	}
+	row = buildRow("[1] Branch", changesLabelShort, "[3] Hist", false)
+	if lipgloss.Width(row) <= innerW {
+		return row
+	}
+	row = buildRow("[1]Br", changesLabelShort, "[3]Hist", true)
+	return clampSingleLine(row, innerW)
 }
 
 func (m Model) renderLeftPane(w, h int) string {
 	innerW := max(16, w-4)
 	innerH := max(3, h-2)
 
-	tab1Label := "[1] Branches"
-	tab2Label := "[2] Alteracoes"
-	if m.state.ConflictCount > 0 {
-		tab2Label = fmt.Sprintf("[2] Alteracoes (%d!)", m.state.ConflictCount)
-	} else if len(m.files) > 0 {
-		tab2Label = fmt.Sprintf("[2] Alteracoes (%d)", len(m.files))
-	}
-	tab3Label := "[3] Historico"
-
-	t1 := m.styles.tabInactive.Render(tab1Label)
-	t2 := m.styles.tabInactive.Render(tab2Label)
-	t3 := m.styles.tabInactive.Render(tab3Label)
-	switch m.activeTab {
-	case tabBranches:
-		t1 = m.styles.tabActive.Render(tab1Label)
-	case tabChanges:
-		t2 = m.styles.tabActive.Render(tab2Label)
-	case tabCommits:
-		t3 = m.styles.tabActive.Render(tab3Label)
-	}
-
-	tabsRow := t1 + " " + t2 + " " + t3
+	tabsRow := m.renderTabsRow(innerW)
 	headerLines := []string{
 		tabsRow,
 		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
 	}
 
 	if m.filtering {
-		headerLines = append(headerLines, m.styles.filterBadge.Render("/")+" "+m.filterInput.View())
+		filterLine := m.styles.filterBadge.Render("/") + " " + m.filterInput.View()
+		headerLines = append(headerLines, clampSingleLine(filterLine, innerW))
 	} else if m.filterQuery != "" {
-		headerLines = append(headerLines, m.styles.filterBadge.Render("FILTRO")+" "+m.styles.itemNormal.Render(truncateText(m.filterQuery, max(8, innerW-18)))+" "+m.styles.itemMuted.Render("(Esc)"))
+		filterLine := m.styles.filterBadge.Render("FILTRO") + " " + m.styles.itemNormal.Render(truncateText(m.filterQuery, max(4, innerW-18))) + " " + m.styles.itemMuted.Render("(Esc)")
+		headerLines = append(headerLines, clampSingleLine(filterLine, innerW))
 	}
 
 	listH := max(1, innerH-len(headerLines))
@@ -297,20 +323,24 @@ func (m Model) renderLeftPane(w, h int) string {
 	}
 
 	content := strings.Join(append(headerLines, body), "\n")
-	return m.styles.paneActive.Width(w - 2).Height(h - 2).Render(content)
+	clamped := clampBoxContent(content, innerW, innerH)
+	return m.styles.paneActive.Width(w).Height(h).Render(clamped)
 }
 
 func (m Model) renderBranchList(w, h int) string {
 	branches := m.visibleBranches()
 	if len(branches) == 0 {
 		if m.filterQuery != "" && len(m.branches) > 0 {
-			return m.styles.emptyState.Render("Nenhuma branch corresponde ao filtro.\nPressione Esc para limpar.")
+			return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhuma branch corresponde ao filtro.\nPressione Esc para limpar."), w, h)
 		}
-		return m.styles.emptyState.Render("Nenhuma branch encontrada.\nPressione 'n' para criar uma.")
+		return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhuma branch encontrada.\nPressione 'n' para criar uma."), w, h)
 	}
 
-	hintH := 1
-	visible := max(1, h-hintH)
+	showHint := h > 1
+	visible := h
+	if showHint {
+		visible = h - 1
+	}
 	start, end := visibleWindow(m.branchIdx, len(branches), visible)
 
 	var lines []string
@@ -337,27 +367,31 @@ func (m Model) renderBranchList(w, h int) string {
 		}
 
 		row := truncateText(prefix+label+suffix, w)
+		var rendered string
 		if i == m.branchIdx {
-			lines = append(lines, m.styles.itemSelected.Width(w).Render(row))
+			rendered = m.styles.itemSelected.Width(w).Render(row)
 		} else if b.IsCurrent {
-			lines = append(lines, m.styles.badgeCurrent.Render(row))
+			rendered = m.styles.badgeCurrent.Render(row)
 		} else if b.IsRemote {
-			lines = append(lines, m.styles.badgeRemote.Render(row))
+			rendered = m.styles.badgeRemote.Render(row)
 		} else {
-			lines = append(lines, m.styles.itemNormal.Render(row))
+			rendered = m.styles.itemNormal.Render(row)
 		}
+		lines = append(lines, clampSingleLine(rendered, w))
 	}
 
 	for len(lines) < visible {
 		lines = append(lines, "")
 	}
 
-	remoteState := "off"
-	if m.includeRemote {
-		remoteState = "on"
+	if showHint {
+		remoteState := "off"
+		if m.includeRemote {
+			remoteState = "on"
+		}
+		hint := fmt.Sprintf("Enter:trocar  n:nova  d:excluir  m:merge  r:rem(%s)  /:filtro", remoteState)
+		lines = append(lines, clampSingleLine(m.styles.itemMuted.Render(truncateText(hint, w)), w))
 	}
-	hint := fmt.Sprintf("Enter:trocar  n:nova  d:excluir  m:merge  r:rem(%s)  /:filtro", remoteState)
-	lines = append(lines, m.styles.itemMuted.Render(truncateText(hint, w)))
 	return strings.Join(lines, "\n")
 }
 
@@ -365,13 +399,16 @@ func (m Model) renderFileList(w, h int) string {
 	files := m.visibleFiles()
 	if len(files) == 0 {
 		if m.filterQuery != "" && len(m.files) > 0 {
-			return m.styles.emptyState.Render("Nenhum arquivo corresponde ao filtro.\nPressione Esc para limpar.")
+			return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhum arquivo corresponde ao filtro.\nPressione Esc para limpar."), w, h)
 		}
-		return m.styles.emptyState.Render("Nenhuma alteracao no repositorio.\nPressione 'z' para restaurar stash (pop).")
+		return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhuma alteracao no repositorio.\nPressione 'z' para restaurar stash (pop)."), w, h)
 	}
 
-	hintH := 1
-	visible := max(1, h-hintH)
+	showHint := h > 1
+	visible := h
+	if showHint {
+		visible = h - 1
+	}
 	start, end := visibleWindow(m.fileIdx, len(files), visible)
 
 	var lines []string
@@ -389,24 +426,27 @@ func (m Model) renderFileList(w, h int) string {
 			name = f.OldPath + " -> " + f.Path
 		}
 
-		maxNameW := max(8, w-len(cursor)-len(badge)-1)
+		maxNameW := max(1, w-lipgloss.Width(cursor)-lipgloss.Width(badge)-1)
 		name = truncateText(name, maxNameW)
 
+		var rendered string
 		if i == m.fileIdx {
 			row := fmt.Sprintf("%s%s %s", cursor, badge, name)
-			lines = append(lines, m.styles.itemSelected.Width(w).Render(truncateText(row, w)))
+			rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
 		} else {
-			row := cursor + badgeStyle.Render(badge) + " " + m.styles.itemNormal.Render(name)
-			lines = append(lines, row)
+			rendered = cursor + badgeStyle.Render(badge) + " " + m.styles.itemNormal.Render(name)
 		}
+		lines = append(lines, clampSingleLine(rendered, w))
 	}
 
 	for len(lines) < visible {
 		lines = append(lines, "")
 	}
 
-	hint := "Espaco/s:stage  Enter/d:diff  c:commit  z:stash  x:descartar"
-	lines = append(lines, m.styles.itemMuted.Render(truncateText(hint, w)))
+	if showHint {
+		hint := "Espaco/s:stage  Enter/d:diff  c:commit  z:stash  x:descartar"
+		lines = append(lines, clampSingleLine(m.styles.itemMuted.Render(truncateText(hint, w)), w))
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -414,13 +454,16 @@ func (m Model) renderCommitList(w, h int) string {
 	commits := m.visibleCommits()
 	if len(commits) == 0 {
 		if m.filterQuery != "" && len(m.commits) > 0 {
-			return m.styles.emptyState.Render("Nenhum commit corresponde ao filtro.\nPressione Esc para limpar.")
+			return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhum commit corresponde ao filtro.\nPressione Esc para limpar."), w, h)
 		}
-		return m.styles.emptyState.Render("Nenhum commit encontrado nesta branch.")
+		return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhum commit encontrado nesta branch."), w, h)
 	}
 
-	hintH := 1
-	visible := max(1, h-hintH)
+	showHint := h > 1
+	visible := h
+	if showHint {
+		visible = h - 1
+	}
 	start, end := visibleWindow(m.commitIdx, len(commits), visible)
 
 	var lines []string
@@ -431,32 +474,47 @@ func (m Model) renderCommitList(w, h int) string {
 			cursor = "> "
 		}
 
-		meta := c.RelativeDate
+		meta := sanitizeSingleLine(c.RelativeDate)
 		prefixText := cursor + c.Hash + " "
-		subjMax := max(8, w-len(prefixText)-len(meta)-3)
-		subj := truncateText(c.Subject, subjMax)
+		metaSuffix := " (" + meta + ")"
+		avail := w - lipgloss.Width(prefixText) - lipgloss.Width(metaSuffix)
 
-		if i == m.commitIdx {
-			row := fmt.Sprintf("%s%s %s (%s)", cursor, c.Hash, subj, meta)
-			lines = append(lines, m.styles.itemSelected.Width(w).Render(truncateText(row, w)))
+		var rendered string
+		if avail >= 4 {
+			subj := truncateText(c.Subject, avail)
+			if i == m.commitIdx {
+				row := fmt.Sprintf("%s%s %s%s", cursor, c.Hash, subj, metaSuffix)
+				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
+			} else {
+				rendered = cursor + m.styles.commitHash.Render(c.Hash) + " " +
+					m.styles.commitSubject.Render(subj) +
+					m.styles.commitMeta.Render(metaSuffix)
+			}
 		} else {
-			row := cursor + m.styles.commitHash.Render(c.Hash) + " " +
-				m.styles.commitSubject.Render(subj) + " " +
-				m.styles.commitMeta.Render("("+meta+")")
-			lines = append(lines, row)
+			subj := truncateText(c.Subject, max(1, w-lipgloss.Width(prefixText)))
+			if i == m.commitIdx {
+				row := fmt.Sprintf("%s%s %s", cursor, c.Hash, subj)
+				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
+			} else {
+				rendered = cursor + m.styles.commitHash.Render(c.Hash) + " " +
+					m.styles.commitSubject.Render(subj)
+			}
 		}
+		lines = append(lines, clampSingleLine(rendered, w))
 	}
 
 	for len(lines) < visible {
 		lines = append(lines, "")
 	}
 
-	refLabel := "HEAD"
-	if m.historyCustomRef != "" {
-		refLabel = m.historyCustomRef
+	if showHint {
+		refLabel := "HEAD"
+		if m.historyCustomRef != "" {
+			refLabel = m.historyCustomRef
+		}
+		hint := fmt.Sprintf("Enter/d:diff  v:revert  y:cherry-pick  b:%s  /:filtro", refLabel)
+		lines = append(lines, clampSingleLine(m.styles.itemMuted.Render(truncateText(hint, w)), w))
 	}
-	hint := fmt.Sprintf("Enter/d:diff  v:revert  y:cherry-pick  b:%s  /:filtro", refLabel)
-	lines = append(lines, m.styles.itemMuted.Render(truncateText(hint, w)))
 	return strings.Join(lines, "\n")
 }
 
@@ -477,6 +535,7 @@ func (m Model) fileBadge(f git.FileStatus) (string, lipgloss.Style) {
 
 func (m Model) renderRightPane(w, h int) string {
 	innerW := max(16, w-4)
+	innerH := max(3, h-2)
 
 	var title string
 	var conflictBar string
@@ -496,9 +555,8 @@ func (m Model) renderRightPane(w, h int) string {
 			f := files[m.fileIdx]
 			if f.IsConflicted {
 				title = "Conflito: " + f.Path
-				conflictBar = m.styles.conflictBar.Width(innerW).Render(
-					"[1] Manter nossos (ours)   [2] Aceitar deles (theirs)   [e] Abrir no $EDITOR",
-				)
+				barText := truncateText("[1] Manter nossos (ours)   [2] Aceitar deles (theirs)   [e] Abrir no $EDITOR", max(1, innerW-2))
+				conflictBar = clampSingleLine(m.styles.conflictBar.Width(innerW).Render(barText), innerW)
 			} else {
 				title = "Diff: " + f.Path + "  (Enter/d para tela cheia estilo VS Code)"
 			}
@@ -516,7 +574,7 @@ func (m Model) renderRightPane(w, h int) string {
 		}
 	}
 
-	header := m.styles.repoName.Render(truncateText(title, innerW))
+	header := clampSingleLine(m.styles.repoName.Render(truncateText(title, innerW)), innerW)
 	parts := []string{header}
 	if conflictBar != "" {
 		parts = append(parts, conflictBar)
@@ -524,27 +582,49 @@ func (m Model) renderRightPane(w, h int) string {
 	parts = append(parts, m.viewport.View())
 
 	content := strings.Join(parts, "\n")
-	return m.styles.paneInactive.Width(w - 2).Height(h - 2).Render(content)
+	clamped := clampBoxContent(content, innerW, innerH)
+	return m.styles.paneInactive.Width(w).Height(h).Render(clamped)
 }
 
-func (m Model) renderCommitLog() string {
+func (m Model) renderCommitLog(width int) string {
+	width = max(16, width)
 	if len(m.commits) == 0 {
-		return m.styles.emptyState.Render("Nenhum commit nesta branch ainda.")
+		return clampSingleLine(m.styles.emptyState.Render("Nenhum commit nesta branch ainda."), width)
 	}
 
 	var lines []string
 	for _, c := range m.commits {
-		hash := m.styles.commitHash.Render(c.Hash)
-		subj := m.styles.commitSubject.Render(c.Subject)
-		meta := m.styles.commitMeta.Render(fmt.Sprintf("(%s, %s)", c.Author, c.RelativeDate))
-		lines = append(lines, fmt.Sprintf("%s %s %s", hash, subj, meta))
+		author := sanitizeSingleLine(c.Author)
+		relDate := sanitizeSingleLine(c.RelativeDate)
+		metaText := fmt.Sprintf("(%s, %s)", author, relDate)
+		hashW := lipgloss.Width(c.Hash)
+		metaW := lipgloss.Width(metaText)
+
+		avail := width - hashW - 1 - 1 - metaW
+		var line string
+		if avail >= 6 {
+			subj := truncateText(c.Subject, avail)
+			line = fmt.Sprintf("%s %s %s",
+				m.styles.commitHash.Render(c.Hash),
+				m.styles.commitSubject.Render(subj),
+				m.styles.commitMeta.Render(metaText),
+			)
+		} else {
+			subj := truncateText(c.Subject, max(1, width-hashW-1))
+			line = fmt.Sprintf("%s %s",
+				m.styles.commitHash.Render(c.Hash),
+				m.styles.commitSubject.Render(subj),
+			)
+		}
+		lines = append(lines, clampSingleLine(line, width))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderConflictDiff(raw string) string {
+func (m Model) renderConflictDiff(raw string, width int) string {
+	width = max(16, width)
 	if strings.TrimSpace(raw) == "" {
-		return m.styles.emptyState.Render("Arquivo em conflito vazio ou binario.")
+		return clampSingleLine(m.styles.emptyState.Render("Arquivo em conflito vazio ou binario."), width)
 	}
 
 	const (
@@ -556,24 +636,27 @@ func (m Model) renderConflictDiff(raw string) string {
 	section := secNormal
 	rawLines := strings.Split(raw, "\n")
 	out := make([]string, 0, len(rawLines))
-	for _, line := range rawLines {
+	for _, rawLine := range rawLines {
+		line := sanitizeDiffText(rawLine)
+		var rendered string
 		switch {
 		case strings.HasPrefix(line, "<<<<<<<"):
 			section = secOurs
-			out = append(out, m.styles.conflictOurs.Render(line+"  [NOSSOS / OURS]"))
+			rendered = m.styles.conflictOurs.Render(fitRunesWidth(line+"  [NOSSOS / OURS]", width))
 		case strings.HasPrefix(line, "======="):
 			section = secTheirs
-			out = append(out, m.styles.conflictSep.Render(line))
+			rendered = m.styles.conflictSep.Render(fitRunesWidth(line, width))
 		case strings.HasPrefix(line, ">>>>>>>"):
 			section = secNormal
-			out = append(out, m.styles.conflictTheirs.Render(line+"  [DELES / THEIRS]"))
+			rendered = m.styles.conflictTheirs.Render(fitRunesWidth(line+"  [DELES / THEIRS]", width))
 		case section == secOurs:
-			out = append(out, m.styles.diffAddLine.Render("| "+line))
+			rendered = m.styles.diffAddLine.Render(fitRunesWidth("| "+line, width))
 		case section == secTheirs:
-			out = append(out, m.styles.conflictTheirs.Render("| "+line))
+			rendered = m.styles.conflictTheirs.Render(fitRunesWidth("| "+line, width))
 		default:
-			out = append(out, m.styles.itemNormal.Render(line))
+			rendered = m.styles.itemNormal.Render(fitRunesWidth(line, width))
 		}
+		out = append(out, clampSingleLine(rendered, width))
 	}
 	return strings.Join(out, "\n")
 }
@@ -597,13 +680,14 @@ func (m Model) renderFooter() string {
 	avail := max(8, maxW-17)
 	bottom := m.styles.cmdBadge.Render("CMD") + " " + m.styles.cmdText.Render("Executado: "+truncateText(cmdStr, avail))
 
-	return top + "\n" + bottom
+	return clampSingleLine(top, maxW) + "\n" + clampSingleLine(bottom, maxW)
 }
 
 func (m Model) renderDiffModal() string {
 	modalW := max(40, m.width-4)
 	modalH := max(10, m.height-2)
 	innerW := max(32, modalW-4)
+	innerH := max(4, modalH-2)
 
 	var title string
 	var statusTag string
@@ -633,7 +717,10 @@ func (m Model) renderDiffModal() string {
 	pct := int(m.diffModalViewport.ScrollPercent() * 100)
 	statusTag = fmt.Sprintf("%s  %d%%", modeText, pct)
 
-	headerLine := m.styles.modalTitle.Render(truncateText(title, max(12, innerW-len(statusTag)-2))) + "  " + m.styles.aheadBehind.Render(statusTag)
+	headerLine := clampSingleLine(
+		m.styles.modalTitle.Render(truncateText(title, max(12, innerW-lipgloss.Width(statusTag)-2)))+"  "+m.styles.aheadBehind.Render(statusTag),
+		innerW,
+	)
 
 	var controls string
 	if m.activeTab == tabChanges {
@@ -647,10 +734,11 @@ func (m Model) renderDiffModal() string {
 		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
 		m.diffModalViewport.View(),
 		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
-		m.styles.itemMuted.Render(truncateText(controls, innerW)),
+		clampSingleLine(m.styles.itemMuted.Render(truncateText(controls, innerW)), innerW),
 	}, "\n")
 
-	box := m.styles.paneActive.Width(modalW - 2).Height(modalH - 2).Render(content)
+	clamped := clampBoxContent(content, innerW, innerH)
+	box := m.styles.paneActive.Width(modalW).Height(modalH).Render(clamped)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
@@ -669,10 +757,16 @@ func (m Model) renderModal() string {
 			m.styles.itemMuted.Render("Enter: criar e trocar   Esc: cancelar")
 
 	case modalCommit:
+		statusLine := m.styles.itemMuted.Render("Enter: commitar   Ctrl+G: gerar com IA   Esc: cancelar")
+		if m.loading {
+			statusLine = m.styles.modalTitle.Render(m.spinner.View() + " Gerando mensagem com IA...")
+		} else if m.errMsg != "" {
+			statusLine = m.styles.modalWarn.Render("Erro: " + m.errMsg)
+		}
 		body = m.styles.modalTitle.Render(fmt.Sprintf("Fazer commit (%d arquivo(s) preparado(s))", m.state.StagedCount)) + "\n\n" +
 			"Mensagem:\n" +
 			m.input.View() + "\n\n" +
-			m.styles.itemMuted.Render("Enter: commitar   Ctrl+G: gerar com IA   Esc: cancelar")
+			statusLine
 
 	case modalAPIKey:
 		body = m.styles.modalTitle.Render("Configurar chave de API (IA)") + "\n\n" +
@@ -756,16 +850,36 @@ func visibleWindow(cursor, total, height int) (int, int) {
 	return start, end
 }
 
+func clampBoxContent(content string, maxW, maxH int) string {
+	if maxW <= 0 || maxH <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().MaxWidth(maxW).MaxHeight(maxH).Render(content)
+}
+
+func clampSingleLine(s string, maxW int) string {
+	if maxW <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().MaxWidth(maxW).MaxHeight(1).Render(s)
+}
+
+func sanitizeSingleLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\t", "    ")
+}
+
 func truncateText(s string, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
 	}
-	runes := []rune(s)
-	if len(runes) <= maxWidth {
+	s = sanitizeSingleLine(s)
+	if lipgloss.Width(s) <= maxWidth {
 		return s
 	}
 	if maxWidth <= 3 {
-		return string(runes[:maxWidth])
+		return fitRunesWidth(s, maxWidth)
 	}
-	return string(runes[:maxWidth-3]) + "..."
+	return fitRunesWidth(s, maxWidth-3) + "..."
 }
