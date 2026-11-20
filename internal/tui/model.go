@@ -10,7 +10,9 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/FelipeSrutkoske/go-vit/internal/config"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
+	"github.com/atotto/clipboard"
 )
 
 type tabKind int
@@ -31,6 +33,7 @@ const (
 	modalForceDelete
 	modalStashSwitch
 	modalCommit
+	modalAPIKey
 	modalDiscard
 	modalDiffView
 	modalRevertCommit
@@ -233,6 +236,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		m.status = msg.message
 		return m, m.reloadRepo()
+
+	case commitMsgGeneratedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.errMsg = ""
+		m.input.SetValue(msg.message)
+		m.input.CursorEnd()
+		return m, nil
 
 	case mergeDoneMsg:
 		m.loading = false
@@ -883,6 +897,24 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.modal = modalNone
 			m.input.Blur()
 			return m, nil
+		case "ctrl+g":
+			cfg, err := config.Load()
+			if err != nil {
+				m.errMsg = fmt.Sprintf("Erro ao carregar configuracao: %v", err)
+				return m, nil
+			}
+			if strings.TrimSpace(cfg.AIAPIKey) == "" {
+				m.modal = modalAPIKey
+				m.input.SetValue("")
+				m.input.Placeholder = "cole sua chave de API..."
+				m.input.EchoMode = textinput.EchoPassword
+				m.input.EchoCharacter = '•'
+				m.input.Focus()
+				return m, nil
+			}
+			m.loading = true
+			m.errMsg = ""
+			return m, tea.Batch(m.spinner.Tick, generateCommitMsgCmd(m.client, cfg.AIAPIKey, cfg.AIModel))
 		case "enter":
 			message := strings.TrimSpace(m.input.Value())
 			m.modal = modalNone
@@ -893,6 +925,52 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, commitCmd(m.client, message))
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+
+	case modalAPIKey:
+		switch k {
+		case "esc":
+			m.input.EchoMode = textinput.EchoNormal
+			m.input.Placeholder = "feat: sua mensagem de commit"
+			m.input.SetValue("")
+			m.modal = modalCommit
+			m.input.Focus()
+			return m, nil
+		case "ctrl+v", "ctrl+shift+v":
+			if text, err := clipboard.ReadAll(); err == nil {
+				text = strings.TrimSpace(text)
+				m.input.SetValue(m.input.Value() + text)
+				m.input.CursorEnd()
+			}
+			return m, nil
+		case "enter":
+			apiKey := strings.TrimSpace(m.input.Value())
+			m.input.EchoMode = textinput.EchoNormal
+			m.input.Placeholder = "feat: sua mensagem de commit"
+			m.input.SetValue("")
+			if apiKey == "" {
+				m.errMsg = "A chave de API nao pode estar vazia"
+				m.modal = modalCommit
+				m.input.Focus()
+				return m, nil
+			}
+			cfg, _ := config.Load()
+			cfg.AIAPIKey = apiKey
+			if err := config.Save(cfg); err != nil {
+				m.errMsg = fmt.Sprintf("Erro ao salvar chave: %v", err)
+				m.modal = modalCommit
+				m.input.Focus()
+				return m, nil
+			}
+			m.modal = modalCommit
+			m.input.Focus()
+			m.loading = true
+			m.errMsg = ""
+			return m, tea.Batch(m.spinner.Tick, generateCommitMsgCmd(m.client, cfg.AIAPIKey, cfg.AIModel))
 		default:
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)

@@ -194,6 +194,19 @@ func (c *Client) ListStatus(ctx context.Context) ([]FileStatus, error) {
 	return files, err
 }
 
+// DiffStaged returns the unified diff of all staged changes.
+func (c *Client) DiffStaged(ctx context.Context) (string, error) {
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	out, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "diff", "--cached")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 func (c *Client) DiffFile(ctx context.Context, file FileStatus) (string, error) {
 	rootDir, err := c.requireRoot(ctx)
 	if err != nil {

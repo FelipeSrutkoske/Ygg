@@ -133,3 +133,7 @@ go vet ./...
 
 4. Abra um Pull Request descrevendo o problema resolvido ou a melhoria proposta.
 
+## Privacidade e Uso de IA
+
+Ao usar a geração de mensagem de commit com IA (`Ctrl+G`), o `git diff --cached` das alterações preparadas é enviado para os servidores da NVIDIA (`integrate.api.nvidia.com`). **Não utilize esta funcionalidade em repositórios com segredos expostos no diff ou sob NDA estrito.**
+

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/FelipeSrutkoske/go-vit/internal/ai"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
 )
 
@@ -294,4 +295,21 @@ func openEditorCmd(rootDir, relPath string) tea.Cmd {
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{err: err}
 	})
+}
+
+type commitMsgGeneratedMsg struct {
+	message string
+	err     error
+}
+
+func generateCommitMsgCmd(client *git.Client, apiKey, model string) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := client.DiffStaged(context.Background())
+		if err != nil {
+			return commitMsgGeneratedMsg{err: err}
+		}
+		aiClient := ai.NewClient(apiKey, model)
+		msg, err := aiClient.GenerateCommitMessage(context.Background(), diff)
+		return commitMsgGeneratedMsg{message: msg, err: err}
+	}
 }

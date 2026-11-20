@@ -672,7 +672,13 @@ func (m Model) renderModal() string {
 		body = m.styles.modalTitle.Render(fmt.Sprintf("Fazer commit (%d arquivo(s) preparado(s))", m.state.StagedCount)) + "\n\n" +
 			"Mensagem:\n" +
 			m.input.View() + "\n\n" +
-			m.styles.itemMuted.Render("Enter: commitar   Esc: cancelar")
+			m.styles.itemMuted.Render("Enter: commitar   Ctrl+G: gerar com IA   Esc: cancelar")
+
+	case modalAPIKey:
+		body = m.styles.modalTitle.Render("Configurar chave de API (IA)") + "\n\n" +
+			"Cole sua chave de API (sera salva com permissao 0600 em ~/.config/go-vit/config.json):\n" +
+			m.input.View() + "\n\n" +
+			m.styles.itemMuted.Render("Enter: salvar e gerar   Esc: voltar")
 
 	case modalDeleteBranch:
 		body = m.styles.modalTitle.Render("Excluir branch") + "\n\n" +
