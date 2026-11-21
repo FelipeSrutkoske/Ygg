@@ -203,3 +203,51 @@ func TestParseCommits_StripsNewlinesBetweenRecords(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCommits_WithDecorations(t *testing.T) {
+	raw := "111aaaa\x1ffirst\x1fAlice\x1f1h ago\x1fHEAD -> main, tag: v1.0.0\x00222bbbb\x1fsecond\x1fBob\x1f2h ago\x1f\x00"
+	commits := parseCommits([]byte(raw))
+	if len(commits) != 2 {
+		t.Fatalf("got %d commits, want 2", len(commits))
+	}
+	if commits[0].Decorations != "HEAD -> main, tag: v1.0.0" {
+		t.Errorf("Decorations = %q", commits[0].Decorations)
+	}
+	if commits[1].Decorations != "" {
+		t.Errorf("expected empty Decorations, got %q", commits[1].Decorations)
+	}
+}
+
+func TestParseCommitFiles(t *testing.T) {
+	raw := "M\x00internal/git/client.go\x00A\x00novo arquivo.txt\x00R100\x00antigo.go\x00novo.go\x00D\x00old.txt\x00"
+	files := parseCommitFiles([]byte(raw))
+	if len(files) != 4 {
+		t.Fatalf("got %d files, want 4: %+v", len(files), files)
+	}
+	if files[0].Status != "M" || files[0].Path != "internal/git/client.go" {
+		t.Errorf("files[0] unexpected: %+v", files[0])
+	}
+	if files[1].Status != "A" || files[1].Path != "novo arquivo.txt" {
+		t.Errorf("files[1] unexpected: %+v", files[1])
+	}
+	if files[2].Status != "R100" || files[2].OldPath != "antigo.go" || files[2].Path != "novo.go" {
+		t.Errorf("files[2] rename unexpected: %+v", files[2])
+	}
+	if files[3].Status != "D" || files[3].Path != "old.txt" {
+		t.Errorf("files[3] unexpected: %+v", files[3])
+	}
+}
+
+func TestParseStashes(t *testing.T) {
+	raw := "stash@{0}\x1fWIP on main: feat x\x1f5 minutes ago\x00\nstash@{1}\x1fOn feat: backup\x1f2 days ago\x00\n"
+	stashes := parseStashes([]byte(raw))
+	if len(stashes) != 2 {
+		t.Fatalf("got %d stashes, want 2", len(stashes))
+	}
+	if stashes[0].Index != 0 || stashes[0].Ref != "stash@{0}" || stashes[0].Message != "WIP on main: feat x" {
+		t.Errorf("stashes[0] unexpected: %+v", stashes[0])
+	}
+	if stashes[1].Index != 1 || stashes[1].Ref != "stash@{1}" || stashes[1].RelativeDate != "2 days ago" {
+		t.Errorf("stashes[1] unexpected: %+v", stashes[1])
+	}
+}

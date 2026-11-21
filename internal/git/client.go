@@ -101,6 +101,7 @@ func (c *Client) InspectRepo(ctx context.Context) (RepoState, error) {
 		RootDir:      rootDir,
 		RepoName:     filepath.Base(rootDir),
 		Kind:         header.Kind,
+		ActiveOp:     c.detectActiveOp(ctx, rootDir),
 		Branch:       header.Branch,
 		Upstream:     header.Upstream,
 		Ahead:        header.Ahead,
@@ -152,6 +153,11 @@ func (c *Client) ListBranches(ctx context.Context, includeRemote bool) ([]Branch
 }
 
 func (c *Client) ListCommits(ctx context.Context, ref string, limit int) ([]Commit, error) {
+	return c.ListCommitsPage(ctx, ref, limit, 0)
+}
+
+// ListCommitsPage returns a paginated slice of commits for the given ref.
+func (c *Client) ListCommitsPage(ctx context.Context, ref string, limit, skip int) ([]Commit, error) {
 	rootDir, err := c.requireRoot(ctx)
 	if err != nil {
 		return nil, err
@@ -165,7 +171,10 @@ func (c *Client) ListCommits(ctx context.Context, ref string, limit int) ([]Comm
 		"log",
 		"-z",
 		"-n", strconv.Itoa(limit),
-		"--format=%h%x1f%s%x1f%an%x1f%ar",
+		"--format=%h%x1f%s%x1f%an%x1f%ar%x1f%D",
+	}
+	if skip > 0 {
+		args = append(args, "--skip="+strconv.Itoa(skip))
 	}
 	if strings.TrimSpace(ref) != "" {
 		args = append(args, ref)
@@ -179,6 +188,43 @@ func (c *Client) ListCommits(ctx context.Context, ref string, limit int) ([]Comm
 		return nil, err
 	}
 	return parseCommits(stdout), nil
+}
+
+// ListCommitFiles returns the list of files touched by the given commit hash.
+func (c *Client) ListCommitFiles(ctx context.Context, hash string) ([]CommitFile, error) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, errors.New("commit hash cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stdout, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "show", "--name-status", "--format=", "-z", hash)
+	if err != nil {
+		return nil, err
+	}
+	return parseCommitFiles(stdout), nil
+}
+
+// DiffCommitFile returns the patch diff of a single file within a commit.
+func (c *Client) DiffCommitFile(ctx context.Context, hash, path string) (string, error) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return "", errors.New("commit hash cannot be empty")
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("file path cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	stdout, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "show", "--format=", "--patch", hash, "--", path)
+	if err != nil {
+		return "", err
+	}
+	return truncateOutput(string(stdout), maxPreviewBytes), nil
 }
 
 func (c *Client) ListStatus(ctx context.Context) ([]FileStatus, error) {
@@ -316,9 +362,74 @@ func (c *Client) SwitchBranch(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	if !c.refExists(ctx, rootDir, "refs/heads/"+name) && c.refExists(ctx, rootDir, "refs/remotes/"+name) {
+		if _, localName, ok := strings.Cut(name, "/"); ok && localName != "" {
+			if c.refExists(ctx, rootDir, "refs/heads/"+localName) {
+				c.setLastCommand("switch", localName)
+				_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "switch", localName)
+				return err
+			}
+			c.setLastCommand("switch", "-c", localName, "--track", name)
+			_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "switch", "-c", localName, "--track", name)
+			return err
+		}
+	}
 	c.setLastCommand("switch", name)
 	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "switch", name)
 	return err
+}
+
+// RenameBranch renames a local branch from oldName to newName.
+func (c *Client) RenameBranch(ctx context.Context, oldName, newName string) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if oldName == "" || newName == "" {
+		return errors.New("branch names cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	c.setLastCommand("branch", "-m", oldName, newName)
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "branch", "-m", oldName, newName)
+	return err
+}
+
+// RebaseBranch rebases the current branch onto the target branch or ref.
+func (c *Client) RebaseBranch(ctx context.Context, onto string) (MergeResult, error) {
+	onto = strings.TrimSpace(onto)
+	if onto == "" {
+		return MergeResult{}, errors.New("branch name cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return MergeResult{}, err
+	}
+
+	c.setLastCommand("rebase", onto)
+	stdout, stderr, rebaseErr := c.runGit(ctx, rootDir, defaultLocalTimeout, "rebase", onto)
+	combined := combineOutputs(stdout, stderr)
+	if rebaseErr == nil {
+		return MergeResult{Conflicted: false, Output: combined}, nil
+	}
+
+	var conflicts []string
+	if statuses, statusErr := c.ListStatus(ctx); statusErr == nil {
+		for _, s := range statuses {
+			if s.IsConflicted {
+				conflicts = append(conflicts, s.Path)
+			}
+		}
+	}
+	if len(conflicts) > 0 || c.detectActiveOp(ctx, rootDir) == OpRebase {
+		return MergeResult{
+			Conflicted: true,
+			Conflicts:  conflicts,
+			Output:     combined,
+		}, nil
+	}
+
+	return MergeResult{Output: combined}, rebaseErr
 }
 
 func (c *Client) CreateBranch(ctx context.Context, name string) error {
@@ -515,6 +626,168 @@ func (c *Client) StashPop(ctx context.Context) error {
 	return err
 }
 
+// ListStashes returns all saved stashes in the repository.
+func (c *Client) ListStashes(ctx context.Context) ([]StashEntry, error) {
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stdout, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "stash", "list", "-z", "--format=%gd%x1f%gs%x1f%cr")
+	if err != nil {
+		return nil, err
+	}
+	return parseStashes(stdout), nil
+}
+
+// ShowStash returns the stat and patch diff of the specified stash ref.
+func (c *Client) ShowStash(ctx context.Context, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", errors.New("stash ref cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	stdout, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "stash", "show", "--stat", "--patch", ref)
+	if err != nil {
+		return "", err
+	}
+	return truncateOutput(string(stdout), maxPreviewBytes), nil
+}
+
+// StashApply applies a stash entry without removing it from the stash list.
+func (c *Client) StashApply(ctx context.Context, ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return errors.New("stash ref cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	c.setLastCommand("stash", "apply", ref)
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "stash", "apply", ref)
+	return err
+}
+
+// StashPopRef pops the specified stash entry.
+func (c *Client) StashPopRef(ctx context.Context, ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return errors.New("stash ref cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	c.setLastCommand("stash", "pop", ref)
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "stash", "pop", ref)
+	return err
+}
+
+// StashDrop drops the specified stash entry.
+func (c *Client) StashDrop(ctx context.Context, ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return errors.New("stash ref cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	c.setLastCommand("stash", "drop", ref)
+	_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "stash", "drop", ref)
+	return err
+}
+
+// ApplyHunkCached stages or unstages a single hunk patch in the index.
+func (c *Client) ApplyHunkCached(ctx context.Context, patch string, reverse bool) error {
+	if strings.TrimSpace(patch) == "" {
+		return errors.New("patch cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	args := []string{"apply", "--cached"}
+	if reverse {
+		args = append(args, "--reverse")
+	}
+	args = append(args, "--unidiff-zero", "-")
+	c.setLastCommand(args...)
+	_, _, err = c.runGitStdin(ctx, rootDir, defaultLocalTimeout, patch, args...)
+	return err
+}
+
+// DiscardHunk reverses a single hunk patch from the working tree or index.
+func (c *Client) DiscardHunk(ctx context.Context, patch string, staged bool) error {
+	if strings.TrimSpace(patch) == "" {
+		return errors.New("patch cannot be empty")
+	}
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	args := []string{"apply", "--reverse"}
+	if staged {
+		args = append(args, "--cached")
+	}
+	args = append(args, "--unidiff-zero", "-")
+	c.setLastCommand(args...)
+	_, _, err = c.runGitStdin(ctx, rootDir, defaultLocalTimeout, patch, args...)
+	return err
+}
+
+// ContinueActiveOp continues an active merge, rebase, cherry-pick, or revert.
+func (c *Client) ContinueActiveOp(ctx context.Context, op ActiveOpKind) error {
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	var subcmd string
+	switch op {
+	case OpMerge:
+		subcmd = "merge"
+	case OpRebase:
+		subcmd = "rebase"
+	case OpCherryPick:
+		subcmd = "cherry-pick"
+	case OpRevert:
+		subcmd = "revert"
+	default:
+		return errors.New("nenhuma operacao ativa para continuar")
+	}
+	c.setLastCommand(subcmd, "--continue")
+	_, _, err = c.runGitWithExtraEnv(ctx, rootDir, defaultLocalTimeout, "", []string{"GIT_EDITOR=true"}, subcmd, "--continue")
+	return err
+}
+
+// AbortActiveOp aborts an active merge, rebase, cherry-pick, or revert.
+func (c *Client) AbortActiveOp(ctx context.Context, op ActiveOpKind) error {
+	rootDir, err := c.requireRoot(ctx)
+	if err != nil {
+		return err
+	}
+	switch op {
+	case OpMerge:
+		c.setLastCommand("merge", "--abort")
+		_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "merge", "--abort")
+	case OpRebase:
+		c.setLastCommand("rebase", "--abort")
+		_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "rebase", "--abort")
+	case OpCherryPick:
+		c.setLastCommand("cherry-pick", "--abort")
+		_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "cherry-pick", "--abort")
+	case OpRevert:
+		c.setLastCommand("revert", "--abort")
+		_, _, err = c.runGit(ctx, rootDir, defaultLocalTimeout, "revert", "--abort")
+	default:
+		return errors.New("nenhuma operacao ativa para abortar")
+	}
+	return err
+}
+
 func (c *Client) ResolveConflict(ctx context.Context, path string, side ConflictSide) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("file path cannot be empty")
@@ -673,7 +946,56 @@ func (c *Client) hasHead(ctx context.Context, rootDir string) bool {
 	return err == nil
 }
 
+func (c *Client) refExists(ctx context.Context, rootDir, fullRef string) bool {
+	_, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "show-ref", "--verify", "--quiet", fullRef)
+	return err == nil
+}
+
+func (c *Client) detectActiveOp(ctx context.Context, rootDir string) ActiveOpKind {
+	gitDir := filepath.Join(rootDir, ".git")
+	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+		out, _, err := c.runGit(ctx, rootDir, defaultLocalTimeout, "rev-parse", "--git-dir")
+		if err != nil {
+			return OpNone
+		}
+		resolved := strings.TrimSpace(string(out))
+		if resolved == "" {
+			return OpNone
+		}
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(rootDir, resolved)
+		}
+		gitDir = resolved
+	}
+
+	exists := func(name string) bool {
+		_, err := os.Stat(filepath.Join(gitDir, name))
+		return err == nil
+	}
+
+	switch {
+	case exists("rebase-merge") || exists("rebase-apply"):
+		return OpRebase
+	case exists("MERGE_HEAD"):
+		return OpMerge
+	case exists("CHERRY_PICK_HEAD"):
+		return OpCherryPick
+	case exists("REVERT_HEAD"):
+		return OpRevert
+	default:
+		return OpNone
+	}
+}
+
 func (c *Client) runGit(ctx context.Context, dir string, timeout time.Duration, args ...string) ([]byte, []byte, error) {
+	return c.runGitStdin(ctx, dir, timeout, "", args...)
+}
+
+func (c *Client) runGitStdin(ctx context.Context, dir string, timeout time.Duration, stdin string, args ...string) ([]byte, []byte, error) {
+	return c.runGitWithExtraEnv(ctx, dir, timeout, stdin, nil, args...)
+}
+
+func (c *Client) runGitWithExtraEnv(ctx context.Context, dir string, timeout time.Duration, stdin string, extraEnv []string, args ...string) ([]byte, []byte, error) {
 	tctx, cancel := withTimeout(ctx, timeout)
 	defer cancel()
 
@@ -682,7 +1004,14 @@ func (c *Client) runGit(ctx context.Context, dir string, timeout time.Duration, 
 	fullArgs = append(fullArgs, args...)
 
 	cmd := exec.CommandContext(tctx, "git", fullArgs...)
-	cmd.Env = gitEnv()
+	env := gitEnv()
+	if len(extraEnv) > 0 {
+		env = append(env, extraEnv...)
+	}
+	cmd.Env = env
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

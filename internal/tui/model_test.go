@@ -298,7 +298,7 @@ index 1111111..2222222 100644
 
 	for _, sz := range sizes {
 		for _, filtering := range []bool{false, true} {
-			for _, tab := range []tabKind{tabBranches, tabChanges, tabCommits} {
+			for _, tab := range []tabKind{tabBranches, tabChanges, tabCommits, tabStashes} {
 				m := NewModel(git.NewClient("."))
 				updated, _ := m.Update(tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
 				m = updated.(Model)
@@ -307,6 +307,7 @@ index 1111111..2222222 100644
 					state: git.RepoState{
 						RepoName:      "go-vit-stress-repo-name",
 						Kind:          git.KindNormal,
+						ActiveOp:      git.OpMerge,
 						Branch:        branches[0].Name,
 						Upstream:      "origin/very-long-upstream-branch-name",
 						Ahead:         3,
@@ -316,10 +317,19 @@ index 1111111..2222222 100644
 					},
 					branches: branches,
 					status:   files,
-					lastCmd:  "git status --porcelain=v1 --branch --verbose",
+					stashes: []git.StashEntry{
+						{Index: 0, Ref: "stash@{0}", Message: "WIP on " + longSubj, RelativeDate: "5 minutes ago"},
+						{Index: 1, Ref: "stash@{1}", Message: "very-long stash message for filter alignment", RelativeDate: "2 days ago"},
+					},
+					lastCmd: "git status --porcelain=v1 --branch --verbose",
 				})
 				m = updated.(Model)
 				m.commits = commits
+				m.commitFiles = []git.CommitFile{
+					{Status: "M", Path: "internal/tui/views.go"},
+					{Status: "A", Path: "internal/git/new_file.go"},
+				}
+				m.commitFileIdx = 1
 				m.activeTab = tab
 				m.filtering = filtering
 				m.filterQuery = "very-long"
@@ -343,6 +353,7 @@ index 1111111..2222222 100644
 					m.fileIdx = tc.fileIdx
 					m.diffText = tc.diff
 					m.commitDiffText = stressDiff
+					m.stashDiffText = stressDiff
 					m.syncRightPane()
 
 					t.Run(fmt.Sprintf("%dx%d_tab%d_filter%v_%s", sz.w, sz.h, tab, filtering, tc.label), func(t *testing.T) {
@@ -399,5 +410,158 @@ func TestCommitList_AllRowsVisibleAndTabLabel(t *testing.T) {
 	}
 	if strings.Contains(tabsRow, "[2] Alt") {
 		t.Errorf("unexpected '[2] Alt' in tabs row, got %q", tabsRow)
+	}
+}
+
+func TestTab4_StashNavigationAndModals(t *testing.T) {
+	m := setupLoadedTestModel()
+	m.stashes = []git.StashEntry{
+		{Index: 0, Ref: "stash@{0}", Message: "wip first", RelativeDate: "2 mins ago"},
+		{Index: 1, Ref: "stash@{1}", Message: "wip second", RelativeDate: "1 hour ago"},
+	}
+
+	// Jump to tab 4 (Stashes)
+	updated, _ := m.Update(keyRune('4'))
+	m = updated.(Model)
+	if m.activeTab != tabStashes {
+		t.Fatalf("expected tabStashes after '4', got %v", m.activeTab)
+	}
+
+	// Move down to second stash
+	updated, _ = m.Update(keyRune('j'))
+	m = updated.(Model)
+	if m.stashIdx != 1 {
+		t.Fatalf("expected stashIdx=1 after 'j', got %d", m.stashIdx)
+	}
+
+	// Open drop stash modal with 'x'
+	updated, _ = m.Update(keyRune('x'))
+	m = updated.(Model)
+	if m.modal != modalDropStash || m.modalTarget != "stash@{1}" {
+		t.Fatalf("expected modalDropStash for stash@{1}, got modal=%v target=%q", m.modal, m.modalTarget)
+	}
+	updated, _ = m.Update(keySpecial(tea.KeyEscape))
+	m = updated.(Model)
+	if m.modal != modalNone {
+		t.Fatalf("expected modalNone after Esc")
+	}
+
+	// Switch to Changes tab and press 'z' -> modalCreateStash
+	updated, _ = m.Update(keyRune('2'))
+	m = updated.(Model)
+	updated, _ = m.Update(keyRune('z'))
+	m = updated.(Model)
+	if m.modal != modalCreateStash {
+		t.Fatalf("expected modalCreateStash on dirty repo, got %v", m.modal)
+	}
+}
+
+func TestDiffModal_HunkNavigationAndDiscardModal(t *testing.T) {
+	m := setupLoadedTestModel()
+	updated, _ := m.Update(keyRune('2'))
+	m = updated.(Model)
+
+	twoHunkDiff := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,2 +1,2 @@
+-old1
++new1
+ keep
+@@ -10,2 +10,2 @@
+-old2
++new2
+ end
+`
+	updated, _ = m.Update(diffLoadedMsg{path: "main.go", diff: twoHunkDiff})
+	m = updated.(Model)
+
+	updated, _ = m.Update(keySpecial(tea.KeyEnter))
+	m = updated.(Model)
+	if m.modal != modalDiffView || m.activeHunkIdx != 0 {
+		t.Fatalf("expected modalDiffView with hunk 0, got modal=%v hunk=%d", m.modal, m.activeHunkIdx)
+	}
+
+	// Next hunk with 'n'
+	updated, _ = m.Update(keyRune('n'))
+	m = updated.(Model)
+	if m.activeHunkIdx != 1 {
+		t.Fatalf("expected activeHunkIdx=1 after 'n', got %d", m.activeHunkIdx)
+	}
+
+	// Open discard hunk confirmation with 'x'
+	updated, _ = m.Update(keyRune('x'))
+	m = updated.(Model)
+	if m.modal != modalDiscardHunk || !strings.Contains(m.modalTarget, "Hunk 2/2") {
+		t.Fatalf("expected modalDiscardHunk for Hunk 2/2, got modal=%v target=%q", m.modal, m.modalTarget)
+	}
+
+	// Esc cancels back to diff modal
+	updated, _ = m.Update(keySpecial(tea.KeyEscape))
+	m = updated.(Model)
+	if m.modal != modalDiffView {
+		t.Fatalf("expected return to modalDiffView after Esc, got %v", m.modal)
+	}
+}
+
+func TestCommitsTab_FileBarDecorationsAndActiveOp(t *testing.T) {
+	m := setupLoadedTestModel()
+	m.state.ActiveOp = git.OpRebase
+
+	header := ansiSeqRe.ReplaceAllString(m.renderHeader(), "")
+	if !strings.Contains(header, "REBASE EM ANDAMENTO") {
+		t.Errorf("expected REBASE EM ANDAMENTO in header, got:\n%s", header)
+	}
+
+	// Press 'A' to open abort confirmation modal
+	updated, _ := m.Update(keyRune('A'))
+	m = updated.(Model)
+	if m.modal != modalAbortOp {
+		t.Fatalf("expected modalAbortOp after 'A', got %v", m.modal)
+	}
+	updated, _ = m.Update(keySpecial(tea.KeyEscape))
+	m = updated.(Model)
+
+	// Switch to tabCommits and load commit files + decorations
+	updated, _ = m.Update(keyRune('3'))
+	m = updated.(Model)
+	m.commits[0].Decorations = "HEAD -> main, tag: v1.2.0"
+
+	commitList := ansiSeqRe.ReplaceAllString(m.renderCommitList(90, 12), "")
+	if !strings.Contains(commitList, "tag: v1.2.0") {
+		t.Errorf("expected commit decoration in commit list:\n%s", commitList)
+	}
+
+	updated, _ = m.Update(commitDiffLoadedMsg{
+		hash: "abc1234",
+		files: []git.CommitFile{
+			{Status: "M", Path: "main.go"},
+			{Status: "A", Path: "helper.go"},
+		},
+		diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n",
+	})
+	m = updated.(Model)
+
+	updated, cmd := m.Update(keySpecial(tea.KeyRight))
+	m = updated.(Model)
+	if m.commitFileIdx != 1 || cmd == nil {
+		t.Fatalf("expected commitFileIdx=1 and cmd != nil after Right, got idx=%d cmd=%v", m.commitFileIdx, cmd)
+	}
+
+	right := ansiSeqRe.ReplaceAllString(m.renderRightPane(70, 20), "")
+	if !strings.Contains(right, "Arq 1/2: M main.go") {
+		t.Errorf("expected commit file bar in right pane:\n%s", right)
+	}
+}
+
+func TestBranchesTab_RenameModal(t *testing.T) {
+	m := setupLoadedTestModel()
+	updated, _ := m.Update(keyRune('M'))
+	m = updated.(Model)
+	if m.modal != modalRenameBranch || m.modalTarget != "main" {
+		t.Fatalf("expected modalRenameBranch for main, got modal=%v target=%q", m.modal, m.modalTarget)
+	}
+	if m.input.Value() != "main" {
+		t.Errorf("expected input pre-filled with 'main', got %q", m.input.Value())
 	}
 }

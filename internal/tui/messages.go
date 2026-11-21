@@ -16,12 +16,20 @@ type repoLoadedMsg struct {
 	state    git.RepoState
 	branches []git.Branch
 	status   []git.FileStatus
+	stashes  []git.StashEntry
 	lastCmd  string
 	err      error
 }
 
 type commitsLoadedMsg struct {
 	ref     string
+	commits []git.Commit
+	err     error
+}
+
+type moreCommitsLoadedMsg struct {
+	ref     string
+	skip    int
 	commits []git.Commit
 	err     error
 }
@@ -33,7 +41,15 @@ type diffLoadedMsg struct {
 }
 
 type commitDiffLoadedMsg struct {
-	hash string
+	hash    string
+	fileIdx int
+	files   []git.CommitFile
+	diff    string
+	err     error
+}
+
+type stashDiffLoadedMsg struct {
+	ref  string
 	diff string
 	err  error
 }
@@ -45,10 +61,11 @@ type actionDoneMsg struct {
 }
 
 type mergeDoneMsg struct {
-	branch  string
-	res     git.MergeResult
-	lastCmd string
-	err     error
+	branch   string
+	isRebase bool
+	res      git.MergeResult
+	lastCmd  string
+	err      error
 }
 
 type deleteBranchErrMsg struct {
@@ -80,10 +97,12 @@ func loadRepoCmd(client *git.Client, includeRemote bool) tea.Cmd {
 		if err != nil {
 			return repoLoadedMsg{state: state, branches: branches, lastCmd: client.LastCommand(), err: err}
 		}
+		stashes, _ := client.ListStashes(ctx)
 		return repoLoadedMsg{
 			state:    state,
 			branches: branches,
 			status:   status,
+			stashes:  stashes,
 			lastCmd:  client.LastCommand(),
 		}
 	}
@@ -96,6 +115,13 @@ func loadCommitsCmd(client *git.Client, ref string) tea.Cmd {
 	}
 }
 
+func loadMoreCommitsCmd(client *git.Client, ref string, skip, limit int) tea.Cmd {
+	return func() tea.Msg {
+		commits, err := client.ListCommitsPage(context.Background(), ref, limit, skip)
+		return moreCommitsLoadedMsg{ref: ref, skip: skip, commits: commits, err: err}
+	}
+}
+
 func loadDiffCmd(client *git.Client, file git.FileStatus) tea.Cmd {
 	return func() tea.Msg {
 		diff, err := client.DiffFile(context.Background(), file)
@@ -105,8 +131,31 @@ func loadDiffCmd(client *git.Client, file git.FileStatus) tea.Cmd {
 
 func loadCommitDiffCmd(client *git.Client, hash string) tea.Cmd {
 	return func() tea.Msg {
-		diff, err := client.ShowCommit(context.Background(), hash)
-		return commitDiffLoadedMsg{hash: hash, diff: diff, err: err}
+		ctx := context.Background()
+		diff, err := client.ShowCommit(ctx, hash)
+		var files []git.CommitFile
+		if err == nil {
+			files, _ = client.ListCommitFiles(ctx, hash)
+		}
+		return commitDiffLoadedMsg{hash: hash, fileIdx: 0, files: files, diff: diff, err: err}
+	}
+}
+
+func loadCommitFileDiffCmd(client *git.Client, hash string, fileIdx int, files []git.CommitFile) tea.Cmd {
+	return func() tea.Msg {
+		if fileIdx <= 0 || fileIdx > len(files) {
+			diff, err := client.ShowCommit(context.Background(), hash)
+			return commitDiffLoadedMsg{hash: hash, fileIdx: 0, files: files, diff: diff, err: err}
+		}
+		diff, err := client.DiffCommitFile(context.Background(), hash, files[fileIdx-1].Path)
+		return commitDiffLoadedMsg{hash: hash, fileIdx: fileIdx, files: files, diff: diff, err: err}
+	}
+}
+
+func loadStashDiffCmd(client *git.Client, ref string) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := client.ShowStash(context.Background(), ref)
+		return stashDiffLoadedMsg{ref: ref, diff: diff, err: err}
 	}
 }
 
@@ -141,6 +190,15 @@ func createBranchCmd(client *git.Client, name string) tea.Cmd {
 	}
 }
 
+func renameBranchCmd(client *git.Client, oldName, newName string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.RenameBranch(context.Background(), oldName, newName); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("Branch %s renomeada para %s", oldName, newName), lastCmd: client.LastCommand()}
+	}
+}
+
 func deleteBranchCmd(client *git.Client, name string, force bool) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.DeleteBranch(context.Background(), name, force); err != nil {
@@ -154,6 +212,31 @@ func mergeBranchCmd(client *git.Client, name string) tea.Cmd {
 	return func() tea.Msg {
 		res, err := client.MergeBranch(context.Background(), name)
 		return mergeDoneMsg{branch: name, res: res, lastCmd: client.LastCommand(), err: err}
+	}
+}
+
+func rebaseBranchCmd(client *git.Client, onto string) tea.Cmd {
+	return func() tea.Msg {
+		res, err := client.RebaseBranch(context.Background(), onto)
+		return mergeDoneMsg{branch: onto, isRebase: true, res: res, lastCmd: client.LastCommand(), err: err}
+	}
+}
+
+func continueOpCmd(client *git.Client, op git.ActiveOpKind) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.ContinueActiveOp(context.Background(), op); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("%s continuado com sucesso", op.Label()), lastCmd: client.LastCommand()}
+	}
+}
+
+func abortOpCmd(client *git.Client, op git.ActiveOpKind) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.AbortActiveOp(context.Background(), op); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("%s abortado", op.Label()), lastCmd: client.LastCommand()}
 	}
 }
 
@@ -189,6 +272,28 @@ func toggleStageAllCmd(client *git.Client, allStaged bool) tea.Cmd {
 	}
 }
 
+func applyHunkCmd(client *git.Client, path, patch string, reverse bool) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.ApplyHunkCached(context.Background(), patch, reverse); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		verb := "Hunk preparado (staged)"
+		if reverse {
+			verb = "Hunk removido do stage"
+		}
+		return actionDoneMsg{message: fmt.Sprintf("%s: %s", verb, path), lastCmd: client.LastCommand()}
+	}
+}
+
+func discardHunkCmd(client *git.Client, path, patch string, staged bool) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.DiscardHunk(context.Background(), patch, staged); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("Hunk descartado: %s", path), lastCmd: client.LastCommand()}
+	}
+}
+
 func commitCmd(client *git.Client, message string) tea.Cmd {
 	return func() tea.Msg {
 		if err := client.Commit(context.Background(), message); err != nil {
@@ -198,19 +303,39 @@ func commitCmd(client *git.Client, message string) tea.Cmd {
 	}
 }
 
-func stashToggleCmd(client *git.Client, hasChanges bool) tea.Cmd {
+func stashPushMsgCmd(client *git.Client, message string) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
-		if hasChanges {
-			if err := client.StashPush(ctx, "go-vit: stash rapido"); err != nil {
-				return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
-			}
-			return actionDoneMsg{message: "Alteracoes guardadas no stash", lastCmd: client.LastCommand()}
-		}
-		if err := client.StashPop(ctx); err != nil {
+		if err := client.StashPush(context.Background(), message); err != nil {
 			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
-		return actionDoneMsg{message: "Stash restaurado (pop)", lastCmd: client.LastCommand()}
+		return actionDoneMsg{message: "Alteracoes guardadas no stash", lastCmd: client.LastCommand()}
+	}
+}
+
+func stashApplyCmd(client *git.Client, ref string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.StashApply(context.Background(), ref); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("Stash aplicado: %s", ref), lastCmd: client.LastCommand()}
+	}
+}
+
+func stashPopRefCmd(client *git.Client, ref string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.StashPopRef(context.Background(), ref); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("Stash restaurado (pop): %s", ref), lastCmd: client.LastCommand()}
+	}
+}
+
+func stashDropCmd(client *git.Client, ref string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.StashDrop(context.Background(), ref); err != nil {
+			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
+		}
+		return actionDoneMsg{message: fmt.Sprintf("Stash descartado: %s", ref), lastCmd: client.LastCommand()}
 	}
 }
 

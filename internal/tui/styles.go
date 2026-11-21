@@ -37,13 +37,17 @@ type styles struct {
 	diffDel         lipgloss.Style
 	diffAddLine     lipgloss.Style
 	diffDelLine     lipgloss.Style
+	diffAddEmph     lipgloss.Style
+	diffDelEmph     lipgloss.Style
 	diffAddGutter   lipgloss.Style
 	diffDelGutter   lipgloss.Style
 	diffLineNum     lipgloss.Style
 	diffStatAdd     lipgloss.Style
 	diffStatDel     lipgloss.Style
 	diffHunk        lipgloss.Style
+	hunkActive      lipgloss.Style
 	diffMeta        lipgloss.Style
+	commitRef       lipgloss.Style
 	conflictOurs    lipgloss.Style
 	conflictSep     lipgloss.Style
 	conflictTheirs  lipgloss.Style
@@ -172,6 +176,14 @@ func defaultStyles() styles {
 		diffDelLine: lipgloss.NewStyle().
 			Foreground(charmtone.Coral).
 			Background(lipgloss.Color("#38161b")),
+		diffAddEmph: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Salt).
+			Background(lipgloss.Color("#266b44")),
+		diffDelEmph: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Salt).
+			Background(lipgloss.Color("#7a2835")),
 		diffAddGutter: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(charmtone.Guac).
@@ -195,9 +207,17 @@ func defaultStyles() styles {
 		diffHunk: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(charmtone.Malibu),
+		hunkActive: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Pepper).
+			Background(charmtone.Butter).
+			Padding(0, 1),
 		diffMeta: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(charmtone.Oyster),
+		commitRef: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(charmtone.Guac),
 		conflictOurs: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(charmtone.Guac),

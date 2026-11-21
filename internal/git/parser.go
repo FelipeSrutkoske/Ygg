@@ -206,12 +206,91 @@ func parseCommits(data []byte) []Commit {
 		if len(fields) < 4 {
 			continue
 		}
+		var decorations string
+		if len(fields) >= 5 {
+			decorations = strings.TrimSpace(fields[4])
+		}
 		commits = append(commits, Commit{
 			Hash:         strings.TrimSpace(fields[0]),
 			Subject:      strings.TrimRight(fields[1], "\r\n"),
 			Author:       strings.TrimSpace(fields[2]),
 			RelativeDate: strings.TrimSpace(fields[3]),
+			Decorations:  decorations,
 		})
 	}
 	return commits
+}
+
+func parseCommitFiles(data []byte) []CommitFile {
+	if len(data) == 0 {
+		return nil
+	}
+	tokens := bytes.Split(data, []byte{0})
+	var files []CommitFile
+	for i := 0; i < len(tokens); i++ {
+		tok := strings.TrimSpace(string(tokens[i]))
+		if tok == "" {
+			continue
+		}
+		if i+1 >= len(tokens) {
+			break
+		}
+		status := tok
+		path1 := string(tokens[i+1])
+		i++
+		if strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C") {
+			if i+1 >= len(tokens) {
+				break
+			}
+			path2 := string(tokens[i+1])
+			i++
+			files = append(files, CommitFile{
+				Status:  status,
+				OldPath: path1,
+				Path:    path2,
+			})
+			continue
+		}
+		files = append(files, CommitFile{
+			Status: status,
+			Path:   path1,
+		})
+	}
+	return files
+}
+
+func parseStashes(data []byte) []StashEntry {
+	if len(data) == 0 {
+		return nil
+	}
+	records := bytes.Split(data, []byte{0})
+	var stashes []StashEntry
+	for _, rec := range records {
+		rec = bytes.Trim(rec, "\r\n")
+		if len(rec) == 0 {
+			continue
+		}
+		fields := strings.Split(string(rec), "\x1f")
+		if len(fields) < 3 {
+			continue
+		}
+		ref := strings.TrimSpace(fields[0])
+		msg := strings.TrimRight(fields[1], "\r\n")
+		relDate := strings.TrimSpace(fields[2])
+		idx := len(stashes)
+		if open := strings.Index(ref, "{"); open >= 0 {
+			if closeIdx := strings.Index(ref[open+1:], "}"); closeIdx >= 0 {
+				if n, err := strconv.Atoi(ref[open+1 : open+1+closeIdx]); err == nil {
+					idx = n
+				}
+			}
+		}
+		stashes = append(stashes, StashEntry{
+			Index:        idx,
+			Ref:          ref,
+			Message:      msg,
+			RelativeDate: relDate,
+		})
+	}
+	return stashes
 }

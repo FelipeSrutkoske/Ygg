@@ -21,6 +21,7 @@ const (
 	tabBranches tabKind = iota
 	tabChanges
 	tabCommits
+	tabStashes
 )
 
 type modalKind int
@@ -29,34 +30,47 @@ const (
 	modalNone modalKind = iota
 	modalHelp
 	modalCreateBranch
+	modalRenameBranch
 	modalDeleteBranch
 	modalForceDelete
 	modalStashSwitch
 	modalCommit
 	modalAPIKey
 	modalDiscard
+	modalDiscardHunk
+	modalCreateStash
+	modalDropStash
+	modalAbortOp
 	modalDiffView
 	modalRevertCommit
 	modalCherryPick
 )
 
 type Model struct {
-	client           *git.Client
-	state            git.RepoState
-	branches         []git.Branch
-	files            []git.FileStatus
-	commits          []git.Commit
-	commitsRef       string
-	diffText         string
-	diffPath         string
-	commitDiffText   string
-	commitDiffHash   string
-	historyCustomRef string
-	activeTab        tabKind
-	branchIdx        int
-	fileIdx          int
-	commitIdx        int
-	includeRemote    bool
+	client             *git.Client
+	state              git.RepoState
+	branches           []git.Branch
+	files              []git.FileStatus
+	commits            []git.Commit
+	stashes            []git.StashEntry
+	commitsRef         string
+	commitsHasMore     bool
+	loadingMoreCommits bool
+	commitFiles        []git.CommitFile
+	commitFileIdx      int
+	diffText           string
+	diffPath           string
+	commitDiffText     string
+	commitDiffHash     string
+	stashDiffText      string
+	stashDiffRef       string
+	historyCustomRef   string
+	activeTab          tabKind
+	branchIdx          int
+	fileIdx            int
+	commitIdx          int
+	stashIdx           int
+	includeRemote      bool
 
 	filtering   bool
 	filterQuery string
@@ -64,13 +78,17 @@ type Model struct {
 
 	sideBySideDiff    bool
 	diffModeSet       bool
+	activeHunkIdx     int
 	diffModalViewport viewport.Model
 
-	modal       modalKind
-	modalTarget string
-	modalFile   git.FileStatus
-	modalChoice int
-	input       textinput.Model
+	modal           modalKind
+	modalTarget     string
+	modalFile       git.FileStatus
+	modalHunkPatch  string
+	modalHunkStaged bool
+	returnToDiff    bool
+	modalChoice     int
+	input           textinput.Model
 
 	viewport viewport.Model
 	spinner  spinner.Model
@@ -156,6 +174,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = msg.state
 		m.branches = msg.branches
 		m.files = msg.status
+		m.stashes = msg.stashes
 		m.clampCursors()
 		if m.activeTab == tabCommits && m.state.Kind != git.KindNotARepo {
 			return m, loadCommitsCmd(m.client, m.historyRef())
@@ -164,14 +183,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case commitsLoadedMsg:
 		m.commitsRef = msg.ref
+		m.loadingMoreCommits = false
+		m.commitFileIdx = 0
+		m.commitFiles = nil
 		if msg.err != nil {
 			m.commits = nil
+			m.commitsHasMore = false
 			m.commitDiffText = ""
 			m.commitDiffHash = ""
 			m.viewport.SetContent(m.styles.bannerError.Render("Erro ao carregar commits: " + msg.err.Error()))
 			return m, nil
 		}
 		m.commits = msg.commits
+		m.commitsHasMore = len(msg.commits) >= 50
 		m.clampCursors()
 		if m.activeTab == tabCommits {
 			vis := m.visibleCommits()
@@ -187,6 +211,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.syncRightPane()
+		return m, nil
+
+	case moreCommitsLoadedMsg:
+		m.loadingMoreCommits = false
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		if msg.ref != m.historyRef() || msg.skip != len(m.commits) {
+			return m, nil
+		}
+		m.commits = append(m.commits, msg.commits...)
+		m.commitsHasMore = len(msg.commits) >= 50
+		if len(msg.commits) > 0 && m.commitIdx < len(m.commits)-1 {
+			m.commitIdx++
+			m.commitFileIdx = 0
+			m.commitFiles = nil
+			return m, m.refreshSelectionCmd()
+		}
 		return m, nil
 
 	case diffLoadedMsg:
@@ -208,6 +251,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case commitDiffLoadedMsg:
 		m.commitDiffHash = msg.hash
+		m.commitFiles = msg.files
+		if msg.fileIdx <= 0 || msg.fileIdx > len(msg.files) {
+			m.commitFileIdx = 0
+		} else {
+			m.commitFileIdx = msg.fileIdx
+		}
 		if msg.err != nil {
 			m.commitDiffText = ""
 			m.viewport.SetContent(m.styles.bannerError.Render("Erro ao carregar diff do commit: " + msg.err.Error()))
@@ -220,6 +269,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncRightPane()
 		if m.modal == modalDiffView && m.activeTab == tabCommits {
 			m.syncDiffModal()
+			m.diffModalViewport.GotoTop()
+		}
+		return m, nil
+
+	case stashDiffLoadedMsg:
+		m.stashDiffRef = msg.ref
+		if msg.err != nil {
+			m.stashDiffText = ""
+			m.viewport.SetContent(m.styles.bannerError.Render("Erro ao carregar stash: " + msg.err.Error()))
+			if m.modal == modalDiffView && m.activeTab == tabStashes {
+				m.diffModalViewport.SetContent(m.styles.bannerError.Render("Erro ao carregar stash: " + msg.err.Error()))
+			}
+			return m, nil
+		}
+		m.stashDiffText = msg.diff
+		m.syncRightPane()
+		if m.modal == modalDiffView && m.activeTab == tabStashes {
+			m.syncDiffModal()
+			m.diffModalViewport.GotoTop()
 		}
 		return m, nil
 
@@ -261,13 +329,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		if msg.res.Conflicted {
 			m.activeTab = tabChanges
-			m.status = fmt.Sprintf(
-				"Conflitos ao mesclar %s (%d arquivo(s)). Resolva na aba Alteracoes & Conflitos.",
-				msg.branch,
-				len(msg.res.Conflicts),
-			)
+			if msg.isRebase {
+				m.status = fmt.Sprintf(
+					"Conflitos no rebase sobre %s (%d arquivo(s)). Resolva e pressione 'C' para continuar.",
+					msg.branch,
+					len(msg.res.Conflicts),
+				)
+			} else {
+				m.status = fmt.Sprintf(
+					"Conflitos ao mesclar %s (%d arquivo(s)). Resolva na aba Alteracoes & Conflitos.",
+					msg.branch,
+					len(msg.res.Conflicts),
+				)
+			}
 		} else {
-			m.status = fmt.Sprintf("Branch %s mesclada com sucesso", msg.branch)
+			if msg.isRebase {
+				m.status = fmt.Sprintf("Rebase sobre %s concluido com sucesso", msg.branch)
+			} else {
+				m.status = fmt.Sprintf("Branch %s mesclada com sucesso", msg.branch)
+			}
 		}
 		return m, m.reloadRepo()
 
@@ -351,8 +431,25 @@ func (m Model) visibleCommits() []git.Commit {
 	for _, c := range m.commits {
 		if strings.Contains(strings.ToLower(c.Hash), q) ||
 			strings.Contains(strings.ToLower(c.Subject), q) ||
-			strings.Contains(strings.ToLower(c.Author), q) {
+			strings.Contains(strings.ToLower(c.Author), q) ||
+			strings.Contains(strings.ToLower(c.Decorations), q) {
 			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (m Model) visibleStashes() []git.StashEntry {
+	q := strings.ToLower(strings.TrimSpace(m.filterQuery))
+	if q == "" {
+		return m.stashes
+	}
+	var out []git.StashEntry
+	for _, st := range m.stashes {
+		if strings.Contains(strings.ToLower(st.Ref), q) ||
+			strings.Contains(strings.ToLower(st.Message), q) ||
+			strings.Contains(strings.ToLower(st.RelativeDate), q) {
+			out = append(out, st)
 		}
 	}
 	return out
@@ -378,6 +475,13 @@ func (m *Model) clampCursors() {
 		m.commitIdx = 0
 	} else if m.commitIdx >= len(commits) {
 		m.commitIdx = len(commits) - 1
+	}
+
+	stashes := m.visibleStashes()
+	if len(stashes) == 0 {
+		m.stashIdx = 0
+	} else if m.stashIdx >= len(stashes) {
+		m.stashIdx = len(stashes) - 1
 	}
 }
 
@@ -412,19 +516,44 @@ func (m *Model) refreshSelectionCmd() tea.Cmd {
 		if len(commits) == 0 {
 			m.commitDiffText = ""
 			m.commitDiffHash = ""
+			m.commitFiles = nil
+			m.commitFileIdx = 0
 			m.syncRightPane()
 			return nil
 		}
-		return loadCommitDiffCmd(m.client, commits[m.commitIdx].Hash)
+		return m.loadSelectedCommitFileCmd()
+
+	case tabStashes:
+		stashes := m.visibleStashes()
+		if len(stashes) == 0 {
+			m.stashDiffText = ""
+			m.stashDiffRef = ""
+			m.syncRightPane()
+			return nil
+		}
+		return loadStashDiffCmd(m.client, stashes[m.stashIdx].Ref)
 	}
 
 	return nil
+}
+
+func (m *Model) loadSelectedCommitFileCmd() tea.Cmd {
+	commits := m.visibleCommits()
+	if len(commits) == 0 {
+		return nil
+	}
+	hash := commits[m.commitIdx].Hash
+	if m.commitFileIdx <= 0 || m.commitFileIdx > len(m.commitFiles) {
+		return loadCommitDiffCmd(m.client, hash)
+	}
+	return loadCommitFileDiffCmd(m.client, hash, m.commitFileIdx, m.commitFiles)
 }
 
 func (m *Model) openDiffModal() {
 	if !m.diffModeSet {
 		m.sideBySideDiff = m.width >= 100
 	}
+	m.activeHunkIdx = 0
 	m.modal = modalDiffView
 	m.syncDiffModal()
 	m.diffModalViewport.GotoTop()
@@ -496,6 +625,25 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case key.Matches(msg, m.keys.ContinueOp):
+		if m.state.ActiveOp == git.OpNone {
+			return m, nil
+		}
+		if m.state.ConflictCount > 0 {
+			m.errMsg = "Resolva todos os conflitos antes de continuar"
+			return m, nil
+		}
+		m.loading = true
+		m.errMsg = ""
+		m.status = "Continuando " + m.state.ActiveOp.Label() + "..."
+		return m, tea.Batch(m.spinner.Tick, continueOpCmd(m.client, m.state.ActiveOp))
+	case key.Matches(msg, m.keys.AbortOp):
+		if m.state.ActiveOp == git.OpNone {
+			return m, nil
+		}
+		m.modal = modalAbortOp
+		m.modalTarget = m.state.ActiveOp.Label()
+		return m, nil
 	case key.Matches(msg, m.keys.Filter):
 		m.filtering = true
 		m.filterInput.SetValue(m.filterQuery)
@@ -510,6 +658,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.activeTab = tabCommits
 			m.syncRightPane()
 			return m, loadCommitsCmd(m.client, m.historyRef())
+		case tabCommits:
+			m.activeTab = tabStashes
+			return m, m.refreshSelectionCmd()
 		default:
 			m.activeTab = tabBranches
 			return m, m.refreshSelectionCmd()
@@ -533,12 +684,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, loadCommitsCmd(m.client, m.historyRef())
 		}
 		return m, nil
+	case key.Matches(msg, m.keys.Tab4):
+		if m.activeTab != tabStashes {
+			m.activeTab = tabStashes
+			return m, m.refreshSelectionCmd()
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.Fetch):
 		m.loading = true
 		m.errMsg = ""
 		m.status = "Executando fetch..."
 		return m, tea.Batch(m.spinner.Tick, fetchCmd(m.client))
 	case key.Matches(msg, m.keys.Pull):
+		if m.activeTab == tabStashes {
+			return m.handleStashesKey(msg)
+		}
 		m.loading = true
 		m.errMsg = ""
 		m.status = "Executando pull..."
@@ -563,6 +723,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleChangesKey(msg)
 	case tabCommits:
 		return m.handleCommitsKey(msg)
+	case tabStashes:
+		return m.handleStashesKey(msg)
 	}
 	return m, nil
 }
@@ -595,8 +757,26 @@ func (m Model) handleBranchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.reloadRepo()
 	case key.Matches(msg, m.keys.NewBranch):
 		m.modal = modalCreateBranch
+		m.input.EchoMode = textinput.EchoNormal
 		m.input.SetValue("")
 		m.input.Placeholder = "nome-da-nova-branch"
+		m.input.Focus()
+		return m, nil
+	case key.Matches(msg, m.keys.RenameBranch):
+		if len(branches) == 0 {
+			return m, nil
+		}
+		b := branches[m.branchIdx]
+		if b.IsRemote {
+			m.errMsg = "Renomeacao disponivel apenas para branches locais"
+			return m, nil
+		}
+		m.modal = modalRenameBranch
+		m.modalTarget = b.Name
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.SetValue(b.Name)
+		m.input.CursorEnd()
+		m.input.Placeholder = "novo-nome-da-branch"
 		m.input.Focus()
 		return m, nil
 	case key.Matches(msg, m.keys.Switch):
@@ -643,6 +823,18 @@ func (m Model) handleBranchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		m.status = fmt.Sprintf("Mesclando %s...", b.Name)
 		return m, tea.Batch(m.spinner.Tick, mergeBranchCmd(m.client, b.Name))
+	case key.Matches(msg, m.keys.RebaseBranch):
+		if len(branches) == 0 {
+			return m, nil
+		}
+		b := branches[m.branchIdx]
+		if b.IsCurrent {
+			return m, nil
+		}
+		m.loading = true
+		m.errMsg = ""
+		m.status = fmt.Sprintf("Fazendo rebase sobre %s...", b.Name)
+		return m, tea.Batch(m.spinner.Tick, rebaseBranchCmd(m.client, b.Name))
 	}
 	return m, nil
 }
@@ -705,14 +897,25 @@ func (m Model) handleChangesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.modal = modalCommit
+		m.input.EchoMode = textinput.EchoNormal
 		m.input.SetValue("")
 		m.input.Placeholder = "Mensagem do commit"
 		m.input.Focus()
 		return m, nil
 	case key.Matches(msg, m.keys.Stash):
-		m.loading = true
-		hasChanges := m.state.ChangedCount > 0
-		return m, tea.Batch(m.spinner.Tick, stashToggleCmd(m.client, hasChanges))
+		if m.state.ChangedCount > 0 {
+			m.modal = modalCreateStash
+			m.input.EchoMode = textinput.EchoNormal
+			m.input.SetValue("")
+			m.input.Placeholder = "Mensagem do stash (opcional)"
+			m.input.Focus()
+			return m, nil
+		}
+		m.activeTab = tabStashes
+		if len(m.stashes) == 0 {
+			m.status = "Nenhum stash salvo no repositorio"
+		}
+		return m, m.refreshSelectionCmd()
 	case key.Matches(msg, m.keys.Discard):
 		if len(files) == 0 {
 			return m, nil
@@ -731,22 +934,48 @@ func (m Model) handleCommitsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Up):
 		if m.commitIdx > 0 {
 			m.commitIdx--
+			m.commitFileIdx = 0
+			m.commitFiles = nil
 			return m, m.refreshSelectionCmd()
 		}
 	case key.Matches(msg, m.keys.Down):
 		if m.commitIdx < len(commits)-1 {
 			m.commitIdx++
+			m.commitFileIdx = 0
+			m.commitFiles = nil
 			return m, m.refreshSelectionCmd()
+		}
+		if m.filterQuery == "" && m.commitsHasMore && !m.loadingMoreCommits && len(m.commits) > 0 {
+			m.loadingMoreCommits = true
+			return m, loadMoreCommitsCmd(m.client, m.historyRef(), len(m.commits), 50)
 		}
 	case key.Matches(msg, m.keys.Top):
 		if len(commits) > 0 && m.commitIdx != 0 {
 			m.commitIdx = 0
+			m.commitFileIdx = 0
+			m.commitFiles = nil
 			return m, m.refreshSelectionCmd()
 		}
 	case key.Matches(msg, m.keys.Bottom):
 		if len(commits) > 0 && m.commitIdx != len(commits)-1 {
 			m.commitIdx = len(commits) - 1
+			m.commitFileIdx = 0
+			m.commitFiles = nil
 			return m, m.refreshSelectionCmd()
+		}
+		if m.filterQuery == "" && m.commitsHasMore && !m.loadingMoreCommits && len(m.commits) > 0 {
+			m.loadingMoreCommits = true
+			return m, loadMoreCommitsCmd(m.client, m.historyRef(), len(m.commits), 50)
+		}
+	case key.Matches(msg, m.keys.CommitPrevFile):
+		if len(m.commitFiles) > 0 && m.commitFileIdx > 0 {
+			m.commitFileIdx--
+			return m, m.loadSelectedCommitFileCmd()
+		}
+	case key.Matches(msg, m.keys.CommitNextFile):
+		if len(m.commitFiles) > 0 && m.commitFileIdx < len(m.commitFiles) {
+			m.commitFileIdx++
+			return m, m.loadSelectedCommitFileCmd()
 		}
 	case key.Matches(msg, m.keys.ViewDiff):
 		if len(commits) == 0 {
@@ -781,7 +1010,72 @@ func (m Model) handleCommitsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Historico: exibindo branch %s", m.historyCustomRef)
 		}
 		m.commitIdx = 0
+		m.commitFileIdx = 0
+		m.commitFiles = nil
 		return m, loadCommitsCmd(m.client, m.historyRef())
+	}
+	return m, nil
+}
+
+func (m Model) handleStashesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	stashes := m.visibleStashes()
+	switch {
+	case key.Matches(msg, m.keys.Up):
+		if m.stashIdx > 0 {
+			m.stashIdx--
+			return m, m.refreshSelectionCmd()
+		}
+	case key.Matches(msg, m.keys.Down):
+		if m.stashIdx < len(stashes)-1 {
+			m.stashIdx++
+			return m, m.refreshSelectionCmd()
+		}
+	case key.Matches(msg, m.keys.Top):
+		if len(stashes) > 0 && m.stashIdx != 0 {
+			m.stashIdx = 0
+			return m, m.refreshSelectionCmd()
+		}
+	case key.Matches(msg, m.keys.Bottom):
+		if len(stashes) > 0 && m.stashIdx != len(stashes)-1 {
+			m.stashIdx = len(stashes) - 1
+			return m, m.refreshSelectionCmd()
+		}
+	case key.Matches(msg, m.keys.ViewDiff):
+		if len(stashes) == 0 {
+			return m, nil
+		}
+		m.openDiffModal()
+		return m, nil
+	case key.Matches(msg, m.keys.NewBranch), key.Matches(msg, m.keys.Stash):
+		if m.state.ChangedCount == 0 {
+			m.errMsg = "Nenhuma alteracao local para salvar em stash"
+			return m, nil
+		}
+		m.modal = modalCreateStash
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.SetValue("")
+		m.input.Placeholder = "Mensagem do stash (opcional)"
+		m.input.Focus()
+		return m, nil
+	case key.Matches(msg, m.keys.ApplyStash):
+		if len(stashes) == 0 {
+			return m, nil
+		}
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, stashApplyCmd(m.client, stashes[m.stashIdx].Ref))
+	case key.Matches(msg, m.keys.Pull):
+		if len(stashes) == 0 {
+			return m, nil
+		}
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, stashPopRefCmd(m.client, stashes[m.stashIdx].Ref))
+	case key.Matches(msg, m.keys.Discard):
+		if len(stashes) == 0 {
+			return m, nil
+		}
+		m.modal = modalDropStash
+		m.modalTarget = stashes[m.stashIdx].Ref
+		return m, nil
 	}
 	return m, nil
 }
@@ -824,15 +1118,40 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case k == "G" || k == "end":
 			m.diffModalViewport.GotoBottom()
 			return m, nil
+		case k == "n" || k == "tab":
+			if m.activeTab == tabChanges {
+				parsed := parseUnifiedDiff(m.diffText)
+				if len(parsed.hunks) > 0 && m.activeHunkIdx < len(parsed.hunks)-1 {
+					m.activeHunkIdx++
+					m.syncDiffModalWithScroll(true)
+				}
+			}
+			return m, nil
+		case k == "N" || k == "shift+tab":
+			if m.activeTab == tabChanges {
+				if m.activeHunkIdx > 0 {
+					m.activeHunkIdx--
+					m.syncDiffModalWithScroll(true)
+				}
+			}
+			return m, nil
 		case k == "[":
 			if m.activeTab == tabChanges {
 				if m.fileIdx > 0 {
 					m.fileIdx--
+					m.activeHunkIdx = 0
 					return m, m.refreshSelectionCmd()
 				}
 			} else if m.activeTab == tabCommits {
 				if m.commitIdx > 0 {
 					m.commitIdx--
+					m.commitFileIdx = 0
+					m.commitFiles = nil
+					return m, m.refreshSelectionCmd()
+				}
+			} else if m.activeTab == tabStashes {
+				if m.stashIdx > 0 {
+					m.stashIdx--
 					return m, m.refreshSelectionCmd()
 				}
 			}
@@ -842,22 +1161,83 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				files := m.visibleFiles()
 				if m.fileIdx < len(files)-1 {
 					m.fileIdx++
+					m.activeHunkIdx = 0
 					return m, m.refreshSelectionCmd()
 				}
 			} else if m.activeTab == tabCommits {
 				commits := m.visibleCommits()
 				if m.commitIdx < len(commits)-1 {
 					m.commitIdx++
+					m.commitFileIdx = 0
+					m.commitFiles = nil
 					return m, m.refreshSelectionCmd()
 				}
+			} else if m.activeTab == tabStashes {
+				stashes := m.visibleStashes()
+				if m.stashIdx < len(stashes)-1 {
+					m.stashIdx++
+					return m, m.refreshSelectionCmd()
+				}
+			}
+			return m, nil
+		case k == "left" || k == "F":
+			if m.activeTab == tabCommits && len(m.commitFiles) > 0 && m.commitFileIdx > 0 {
+				m.commitFileIdx--
+				m.diffModalViewport.GotoTop()
+				return m, m.loadSelectedCommitFileCmd()
+			}
+			return m, nil
+		case k == "right" || k == "f":
+			if m.activeTab == tabCommits && len(m.commitFiles) > 0 && m.commitFileIdx < len(m.commitFiles) {
+				m.commitFileIdx++
+				m.diffModalViewport.GotoTop()
+				return m, m.loadSelectedCommitFileCmd()
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.Stage):
 			if m.activeTab == tabChanges {
 				files := m.visibleFiles()
 				if len(files) > 0 {
+					f := files[m.fileIdx]
+					parsed := parseUnifiedDiff(m.diffText)
+					if len(parsed.hunks) > 0 && !f.IsUntracked && !f.IsConflicted {
+						idx := min(max(0, m.activeHunkIdx), len(parsed.hunks)-1)
+						h := parsed.hunks[idx]
+						isStagedHunk := h.staged || (f.IsStaged && !f.IsUnstaged)
+						m.loading = true
+						return m, tea.Batch(m.spinner.Tick, applyHunkCmd(m.client, f.Path, h.patch, isStagedHunk))
+					}
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, toggleStageCmd(m.client, f))
+				}
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.StageAll):
+			if m.activeTab == tabChanges {
+				files := m.visibleFiles()
+				if len(files) > 0 {
 					m.loading = true
 					return m, tea.Batch(m.spinner.Tick, toggleStageCmd(m.client, files[m.fileIdx]))
+				}
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.Discard):
+			if m.activeTab == tabChanges {
+				files := m.visibleFiles()
+				if len(files) > 0 {
+					f := files[m.fileIdx]
+					parsed := parseUnifiedDiff(m.diffText)
+					if len(parsed.hunks) > 0 && !f.IsUntracked && !f.IsConflicted {
+						idx := min(max(0, m.activeHunkIdx), len(parsed.hunks)-1)
+						h := parsed.hunks[idx]
+						m.modal = modalDiscardHunk
+						m.modalTarget = fmt.Sprintf("%s (Hunk %d/%d)", f.Path, idx+1, len(parsed.hunks))
+						m.modalFile = f
+						m.modalHunkPatch = h.patch
+						m.modalHunkStaged = h.staged || (f.IsStaged && !f.IsUnstaged)
+						m.returnToDiff = true
+						return m, nil
+					}
 				}
 			}
 			return m, nil
@@ -887,6 +1267,46 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, createBranchCmd(m.client, name))
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+
+	case modalRenameBranch:
+		switch k {
+		case "esc":
+			m.modal = modalNone
+			m.input.Blur()
+			return m, nil
+		case "enter":
+			newName := strings.TrimSpace(m.input.Value())
+			oldName := m.modalTarget
+			m.modal = modalNone
+			m.input.Blur()
+			if newName == "" || newName == oldName {
+				return m, nil
+			}
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, renameBranchCmd(m.client, oldName, newName))
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+
+	case modalCreateStash:
+		switch k {
+		case "esc":
+			m.modal = modalNone
+			m.input.Blur()
+			return m, nil
+		case "enter":
+			message := strings.TrimSpace(m.input.Value())
+			m.modal = modalNone
+			m.input.Blur()
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, stashPushMsgCmd(m.client, message))
 		default:
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
@@ -1015,6 +1435,57 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.modal = modalNone
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, discardFileCmd(m.client, f))
+		}
+		return m, nil
+
+	case modalDiscardHunk:
+		switch k {
+		case "esc", "n", "N":
+			if m.returnToDiff {
+				m.modal = modalDiffView
+			} else {
+				m.modal = modalNone
+			}
+			m.returnToDiff = false
+			return m, nil
+		case "enter", "s", "S", "y", "Y":
+			path := m.modalFile.Path
+			patch := m.modalHunkPatch
+			staged := m.modalHunkStaged
+			if m.returnToDiff {
+				m.modal = modalDiffView
+			} else {
+				m.modal = modalNone
+			}
+			m.returnToDiff = false
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, discardHunkCmd(m.client, path, patch, staged))
+		}
+		return m, nil
+
+	case modalDropStash:
+		switch k {
+		case "esc", "n", "N":
+			m.modal = modalNone
+			return m, nil
+		case "enter", "s", "S", "y", "Y":
+			ref := m.modalTarget
+			m.modal = modalNone
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, stashDropCmd(m.client, ref))
+		}
+		return m, nil
+
+	case modalAbortOp:
+		switch k {
+		case "esc", "n", "N":
+			m.modal = modalNone
+			return m, nil
+		case "enter", "s", "S", "y", "Y":
+			op := m.state.ActiveOp
+			m.modal = modalNone
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, abortOpCmd(m.client, op))
 		}
 		return m, nil
 

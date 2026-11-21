@@ -47,14 +47,20 @@ func (m *Model) resizeViewport() {
 	files := m.visibleFiles()
 	if m.activeTab == tabChanges && len(files) > 0 && files[m.fileIdx].IsConflicted {
 		vpH = max(1, innerH-2)
+	} else if m.activeTab == tabCommits && len(m.commitFiles) > 0 {
+		vpH = max(1, innerH-2)
 	}
 	m.viewport.SetWidth(vpW)
 	m.viewport.SetHeight(vpH)
 
 	modalW := max(40, m.width-4)
 	modalH := max(10, m.height-2)
+	extraModalLines := 0
+	if m.activeTab == tabCommits && len(m.commitFiles) > 0 {
+		extraModalLines = 1
+	}
 	m.diffModalViewport.SetWidth(max(32, modalW-4))
-	m.diffModalViewport.SetHeight(max(4, modalH-6))
+	m.diffModalViewport.SetHeight(max(4, modalH-6-extraModalLines))
 }
 
 func (m *Model) paneDimensions() (leftW, leftH, rightW, rightH int) {
@@ -117,32 +123,68 @@ func (m *Model) syncRightPane() {
 		}
 		m.viewport.SetContent(renderVSCodeUnifiedDiff(m.commitDiffText, vpW, m.styles))
 		m.viewport.GotoTop()
+
+	case tabStashes:
+		stashes := m.visibleStashes()
+		if len(stashes) == 0 {
+			if m.filterQuery != "" && len(m.stashes) > 0 {
+				m.viewport.SetContent(m.styles.emptyState.Width(vpW).Render("Nenhum stash corresponde ao filtro atual."))
+			} else {
+				m.viewport.SetContent(m.styles.emptyState.Width(vpW).Render("Nenhum stash salvo no repositorio."))
+			}
+			m.viewport.GotoTop()
+			return
+		}
+		m.viewport.SetContent(renderVSCodeUnifiedDiff(m.stashDiffText, vpW, m.styles))
+		m.viewport.GotoTop()
 	}
 }
 
 func (m *Model) syncDiffModal() {
+	m.syncDiffModalWithScroll(false)
+}
+
+func (m *Model) syncDiffModalWithScroll(scrollToHunk bool) {
 	m.resizeViewport()
 	vpW := max(16, m.diffModalViewport.Width())
 
-	if m.activeTab == tabChanges {
+	switch m.activeTab {
+	case tabChanges:
 		files := m.visibleFiles()
 		if len(files) == 0 {
 			m.diffModalViewport.SetContent(m.styles.emptyState.Render("Nenhum arquivo selecionado."))
 			return
 		}
-		if files[m.fileIdx].IsConflicted {
+		f := files[m.fileIdx]
+		if f.IsConflicted {
 			m.diffModalViewport.SetContent(m.renderConflictDiff(m.diffText, vpW))
 			return
 		}
-		if m.sideBySideDiff {
-			m.diffModalViewport.SetContent(renderVSCodeSideBySideDiff(m.diffText, vpW, m.styles))
-		} else {
-			m.diffModalViewport.SetContent(renderVSCodeUnifiedDiff(m.diffText, vpW, m.styles))
+		parsed := parseUnifiedDiff(m.diffText)
+		if len(parsed.hunks) == 0 {
+			m.activeHunkIdx = 0
+		} else if m.activeHunkIdx >= len(parsed.hunks) {
+			m.activeHunkIdx = len(parsed.hunks) - 1
+		} else if m.activeHunkIdx < 0 {
+			m.activeHunkIdx = 0
 		}
-		return
-	}
+		activeHunk := m.activeHunkIdx
+		if len(parsed.hunks) == 0 || f.IsUntracked {
+			activeHunk = -1
+		}
+		var rendered string
+		var offset int
+		if m.sideBySideDiff {
+			rendered, offset = renderVSCodeSideBySideDiffHunk(m.diffText, vpW, activeHunk, m.styles)
+		} else {
+			rendered, offset = renderVSCodeUnifiedDiffHunk(m.diffText, vpW, activeHunk, m.styles)
+		}
+		m.diffModalViewport.SetContent(rendered)
+		if scrollToHunk && activeHunk >= 0 {
+			m.diffModalViewport.SetYOffset(max(0, offset-1))
+		}
 
-	if m.activeTab == tabCommits {
+	case tabCommits:
 		commits := m.visibleCommits()
 		if len(commits) == 0 {
 			m.diffModalViewport.SetContent(m.styles.emptyState.Render("Nenhum commit selecionado."))
@@ -152,6 +194,18 @@ func (m *Model) syncDiffModal() {
 			m.diffModalViewport.SetContent(renderVSCodeSideBySideDiff(m.commitDiffText, vpW, m.styles))
 		} else {
 			m.diffModalViewport.SetContent(renderVSCodeUnifiedDiff(m.commitDiffText, vpW, m.styles))
+		}
+
+	case tabStashes:
+		stashes := m.visibleStashes()
+		if len(stashes) == 0 {
+			m.diffModalViewport.SetContent(m.styles.emptyState.Render("Nenhum stash selecionado."))
+			return
+		}
+		if m.sideBySideDiff {
+			m.diffModalViewport.SetContent(renderVSCodeSideBySideDiff(m.stashDiffText, vpW, m.styles))
+		} else {
+			m.diffModalViewport.SetContent(renderVSCodeUnifiedDiff(m.stashDiffText, vpW, m.styles))
 		}
 	}
 }
@@ -240,7 +294,12 @@ func (m Model) renderHeader() string {
 		statusBadge = m.styles.statusClean.Render("Limpo")
 	}
 
-	left := m.styles.repoName.Render("go-vit :: "+truncateText(repo, 24)) + "  " + branchBadge + upstreamStr + syncStr + "  " + statusBadge
+	opBadge := ""
+	if m.state.ActiveOp != git.OpNone {
+		opBadge = "  " + m.styles.statusConflict.Render(m.state.ActiveOp.Label()+" (C:cont A:abort)")
+	}
+
+	left := m.styles.repoName.Render("go-vit :: "+truncateText(repo, 24)) + "  " + branchBadge + upstreamStr + syncStr + "  " + statusBadge + opBadge
 	if m.loading {
 		left += "  " + m.spinner.View()
 	}
@@ -264,14 +323,21 @@ func (m Model) renderTabsRow(innerW int) string {
 		changesLabelCompact = fmt.Sprintf("[2]Change(%d)", len(m.files))
 	}
 
-	buildRow := func(l1, l2, l3 string, compact bool) string {
+	stashesLabelFull := "[4] Stashes"
+	stashesLabelShort := "[4] Stash"
+	if len(m.stashes) > 0 {
+		stashesLabelFull = fmt.Sprintf("[4] Stashes (%d)", len(m.stashes))
+		stashesLabelShort = fmt.Sprintf("[4] Stash(%d)", len(m.stashes))
+	}
+
+	buildRow := func(l1, l2, l3, l4 string, compact bool) string {
 		active := m.styles.tabActive
 		inactive := m.styles.tabInactive
 		if compact {
 			active = active.Padding(0, 0)
 			inactive = inactive.Padding(0, 0)
 		}
-		t1, t2, t3 := inactive.Render(l1), inactive.Render(l2), inactive.Render(l3)
+		t1, t2, t3, t4 := inactive.Render(l1), inactive.Render(l2), inactive.Render(l3), inactive.Render(l4)
 		switch m.activeTab {
 		case tabBranches:
 			t1 = active.Render(l1)
@@ -279,19 +345,25 @@ func (m Model) renderTabsRow(innerW int) string {
 			t2 = active.Render(l2)
 		case tabCommits:
 			t3 = active.Render(l3)
+		case tabStashes:
+			t4 = active.Render(l4)
 		}
-		return t1 + " " + t2 + " " + t3
+		return t1 + " " + t2 + " " + t3 + " " + t4
 	}
 
-	row := buildRow("[1] Branches", changesLabelFull, "[3] Historico", false)
+	row := buildRow("[1] Branches", changesLabelFull, "[3] Historico", stashesLabelFull, false)
 	if lipgloss.Width(row) <= innerW {
 		return row
 	}
-	row = buildRow("[1] Branch", changesLabelShort, "[3] Hist", false)
+	row = buildRow("[1] Branch", changesLabelShort, "[3] Hist", stashesLabelShort, false)
 	if lipgloss.Width(row) <= innerW {
 		return row
 	}
-	row = buildRow("[1]Br", changesLabelCompact, "[3]Hist", true)
+	row = buildRow("[1]Br", changesLabelShort, "[3]Hist", "[4]Stash", true)
+	if lipgloss.Width(row) <= innerW {
+		return row
+	}
+	row = buildRow("[1]Br", changesLabelCompact, "[3]Hist", "[4]St", true)
 	return clampSingleLine(row, innerW)
 }
 
@@ -323,6 +395,8 @@ func (m Model) renderLeftPane(w, h int) string {
 		body = m.renderFileList(innerW, listH)
 	case tabCommits:
 		body = m.renderCommitList(innerW, listH)
+	case tabStashes:
+		body = m.renderStashList(innerW, listH)
 	}
 
 	content := strings.Join(append(headerLines, body), "\n")
@@ -392,7 +466,7 @@ func (m Model) renderBranchList(w, h int) string {
 		if m.includeRemote {
 			remoteState = "on"
 		}
-		hint := fmt.Sprintf("Enter:trocar  n:nova  d:excluir  m:merge  r:rem(%s)  /:filtro", remoteState)
+		hint := fmt.Sprintf("Enter:trocar  n:nova  M:renomear  d:excluir  m:merge  B:rebase  r:rem(%s)", remoteState)
 		lines = append(lines, clampSingleLine(m.styles.itemMuted.Render(truncateText(hint, w)), w))
 	}
 	return strings.Join(lines, "\n")
@@ -404,7 +478,7 @@ func (m Model) renderFileList(w, h int) string {
 		if m.filterQuery != "" && len(m.files) > 0 {
 			return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhum arquivo corresponde ao filtro.\nPressione Esc para limpar."), w, h)
 		}
-		return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhuma alteracao no repositorio.\nPressione 'z' para restaurar stash (pop)."), w, h)
+		return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhuma alteracao no repositorio.\nPressione '4' para ver stashes."), w, h)
 	}
 
 	showHint := h > 1
@@ -479,7 +553,13 @@ func (m Model) renderCommitList(w, h int) string {
 
 		hash := sanitizeSingleLine(strings.TrimSpace(c.Hash))
 		meta := sanitizeSingleLine(c.RelativeDate)
-		prefixText := cursor + hash + " "
+		dec := sanitizeSingleLine(strings.TrimSpace(c.Decorations))
+		decBadge := ""
+		if dec != "" && w >= lipgloss.Width(cursor+hash)+lipgloss.Width(" ["+dec+"]")+12 {
+			decBadge = " [" + truncateText(dec, max(6, w/3)) + "]"
+		}
+
+		prefixText := cursor + hash + decBadge + " "
 		metaSuffix := " (" + meta + ")"
 		avail := w - lipgloss.Width(prefixText) - lipgloss.Width(metaSuffix)
 
@@ -487,15 +567,19 @@ func (m Model) renderCommitList(w, h int) string {
 		if avail >= 4 {
 			subj := truncateText(c.Subject, avail)
 			if i == m.commitIdx {
-				row := fmt.Sprintf("%s%s %s%s", cursor, hash, subj, metaSuffix)
+				row := fmt.Sprintf("%s%s%s %s%s", cursor, hash, decBadge, subj, metaSuffix)
 				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
 			} else {
-				rendered = cursor + m.styles.commitHash.Render(hash) + " " +
+				decPart := ""
+				if decBadge != "" {
+					decPart = m.styles.commitRef.Render(decBadge)
+				}
+				rendered = cursor + m.styles.commitHash.Render(hash) + decPart + " " +
 					m.styles.commitSubject.Render(subj) +
 					m.styles.commitMeta.Render(metaSuffix)
 			}
 		} else {
-			subj := truncateText(c.Subject, max(1, w-lipgloss.Width(prefixText)))
+			subj := truncateText(c.Subject, max(1, w-lipgloss.Width(cursor+hash+" ")))
 			if i == m.commitIdx {
 				row := fmt.Sprintf("%s%s %s", cursor, hash, subj)
 				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
@@ -516,7 +600,78 @@ func (m Model) renderCommitList(w, h int) string {
 		if m.historyCustomRef != "" {
 			refLabel = m.historyCustomRef
 		}
-		hint := fmt.Sprintf("Enter/d:diff  v:revert  y:cherry-pick  b:%s  /:filtro", refLabel)
+		moreSuffix := ""
+		if m.loadingMoreCommits {
+			moreSuffix = "  (carregando...)"
+		} else if m.commitsHasMore && m.filterQuery == "" {
+			moreSuffix = "  (j/G:+)"
+		}
+		hint := fmt.Sprintf("Enter/d:diff  ←/→:arq  v:revert  y:cherry-pick  b:%s%s", refLabel, moreSuffix)
+		lines = append(lines, clampSingleLine(m.styles.itemMuted.Render(truncateText(hint, w)), w))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderStashList(w, h int) string {
+	stashes := m.visibleStashes()
+	if len(stashes) == 0 {
+		if m.filterQuery != "" && len(m.stashes) > 0 {
+			return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhum stash corresponde ao filtro.\nPressione Esc para limpar."), w, h)
+		}
+		return clampBoxContent(m.styles.emptyState.Width(w).Render("Nenhum stash salvo.\nUse 'z' na aba Alteracoes para criar um."), w, h)
+	}
+
+	showHint := h > 1
+	visible := h
+	if showHint {
+		visible = h - 1
+	}
+	start, end := visibleWindow(m.stashIdx, len(stashes), visible)
+
+	var lines []string
+	for i := start; i < end; i++ {
+		st := stashes[i]
+		cursor := "  "
+		if i == m.stashIdx {
+			cursor = "> "
+		}
+
+		ref := sanitizeSingleLine(st.Ref)
+		meta := sanitizeSingleLine(st.RelativeDate)
+		prefixText := cursor + ref + " "
+		metaSuffix := " (" + meta + ")"
+		avail := w - lipgloss.Width(prefixText) - lipgloss.Width(metaSuffix)
+
+		var rendered string
+		if avail >= 4 {
+			msgText := truncateText(st.Message, avail)
+			if i == m.stashIdx {
+				row := fmt.Sprintf("%s%s %s%s", cursor, ref, msgText, metaSuffix)
+				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
+			} else {
+				rendered = cursor + m.styles.commitHash.Render(ref) + " " +
+					m.styles.commitSubject.Render(msgText) +
+					m.styles.commitMeta.Render(metaSuffix)
+			}
+		} else {
+			msgText := truncateText(st.Message, max(1, w-lipgloss.Width(prefixText)))
+			if i == m.stashIdx {
+				row := fmt.Sprintf("%s%s %s", cursor, ref, msgText)
+				rendered = m.styles.itemSelected.Width(w).Render(truncateText(row, w))
+			} else {
+				rendered = cursor + m.styles.commitHash.Render(ref) + " " +
+					m.styles.commitSubject.Render(msgText)
+			}
+		}
+		lines = append(lines, clampSingleLine(rendered, w))
+	}
+
+	for len(lines) < visible {
+		lines = append(lines, "")
+	}
+
+	if showHint {
+		hint := "Enter/d:diff  a:apply  p:pop  x:drop  n:novo stash  /:filtro"
 		lines = append(lines, clampSingleLine(m.styles.itemMuted.Render(truncateText(hint, w)), w))
 	}
 	return strings.Join(lines, "\n")
@@ -537,12 +692,30 @@ func (m Model) fileBadge(f git.FileStatus) (string, lipgloss.Style) {
 	}
 }
 
+func (m Model) renderCommitFileBar(width int) string {
+	if len(m.commitFiles) == 0 {
+		return ""
+	}
+	var label string
+	if m.commitFileIdx <= 0 || m.commitFileIdx > len(m.commitFiles) {
+		label = fmt.Sprintf("[Todos (%d arq)]  (←/→: inspecionar arquivo)", len(m.commitFiles))
+	} else {
+		cf := m.commitFiles[m.commitFileIdx-1]
+		name := cf.Path
+		if cf.OldPath != "" {
+			name = cf.OldPath + " -> " + cf.Path
+		}
+		label = fmt.Sprintf("[Arq %d/%d: %s %s]  (←/→: trocar arquivo)", m.commitFileIdx, len(m.commitFiles), cf.Status, name)
+	}
+	return clampSingleLine(m.styles.conflictBar.Width(width).Render(truncateText(label, max(1, width-2))), width)
+}
+
 func (m Model) renderRightPane(w, h int) string {
 	innerW := max(16, w-4)
 	innerH := max(3, h-2)
 
 	var title string
-	var conflictBar string
+	var subBar string
 
 	switch m.activeTab {
 	case tabBranches:
@@ -560,7 +733,7 @@ func (m Model) renderRightPane(w, h int) string {
 			if f.IsConflicted {
 				title = "Conflito: " + f.Path
 				barText := truncateText("[1] Manter nossos (ours)   [2] Aceitar deles (theirs)   [e] Abrir no $EDITOR", max(1, innerW-2))
-				conflictBar = clampSingleLine(m.styles.conflictBar.Width(innerW).Render(barText), innerW)
+				subBar = clampSingleLine(m.styles.conflictBar.Width(innerW).Render(barText), innerW)
 			} else {
 				title = "Diff: " + f.Path + "  (Enter/d para tela cheia estilo VS Code)"
 			}
@@ -573,15 +746,27 @@ func (m Model) renderRightPane(w, h int) string {
 		if len(commits) > 0 {
 			c := commits[m.commitIdx]
 			title = fmt.Sprintf("Commit %s: %s  (Enter/d para tela cheia)", strings.TrimSpace(c.Hash), c.Subject)
+			if len(m.commitFiles) > 0 {
+				subBar = m.renderCommitFileBar(innerW)
+			}
 		} else {
 			title = "Detalhes do Commit"
+		}
+
+	case tabStashes:
+		stashes := m.visibleStashes()
+		if len(stashes) > 0 {
+			st := stashes[m.stashIdx]
+			title = fmt.Sprintf("Stash %s: %s  (Enter/d para tela cheia)", st.Ref, st.Message)
+		} else {
+			title = "Detalhes do Stash"
 		}
 	}
 
 	header := clampSingleLine(m.styles.repoName.Render(truncateText(title, innerW)), innerW)
 	parts := []string{header}
-	if conflictBar != "" {
-		parts = append(parts, conflictBar)
+	if subBar != "" {
+		parts = append(parts, subBar)
 	}
 	parts = append(parts, m.viewport.View())
 
@@ -675,7 +860,7 @@ func (m Model) renderFooter() string {
 	} else if m.status != "" {
 		top = m.styles.bannerInfo.Render(truncateText(m.status, maxW))
 	} else {
-		top = m.styles.footer.Render(truncateText("f:fetch  p:pull  P:push  /:filtrar  Enter/d:diff  Tab:aba  ?:ajuda  q:sair", maxW))
+		top = m.styles.footer.Render(truncateText("f:fetch  p:pull  P:push  /:filtrar  Enter/d:diff  Tab/1-4:abas  ?:ajuda  q:sair", maxW))
 	}
 
 	cmdStr := m.lastGitCmd
@@ -695,24 +880,51 @@ func (m Model) renderDiffModal() string {
 	innerH := max(4, modalH-2)
 
 	var title string
-	var statusTag string
-	if m.activeTab == tabChanges {
+	var hunkInfo string
+	var commitFileBar string
+	var controls string
+
+	switch m.activeTab {
+	case tabChanges:
 		files := m.visibleFiles()
 		if len(files) > 0 {
 			f := files[m.fileIdx]
 			badge, _ := m.fileBadge(f)
 			title = fmt.Sprintf("Visualizador de Diff (VS Code) :: %s %s (%d/%d)", badge, f.Path, m.fileIdx+1, len(files))
+			if !f.IsConflicted && !f.IsUntracked {
+				parsed := parseUnifiedDiff(m.diffText)
+				if len(parsed.hunks) > 0 {
+					idx := min(max(0, m.activeHunkIdx), len(parsed.hunks)-1)
+					hunkInfo = fmt.Sprintf("  Hunk %d/%d", idx+1, len(parsed.hunks))
+				}
+			}
 		} else {
 			title = "Visualizador de Diff"
 		}
-	} else {
+		controls = "l:lado/unif  n/N:hunk  Espaco/s:stage hunk  S:stage arq  x:desc hunk  [/]:arq  e:$EDITOR  Esc/q:fechar"
+
+	case tabCommits:
 		commits := m.visibleCommits()
 		if len(commits) > 0 {
 			c := commits[m.commitIdx]
 			title = fmt.Sprintf("Visualizador de Commit :: %s - %s (%d/%d)", c.Hash, c.Subject, m.commitIdx+1, len(commits))
+			if len(m.commitFiles) > 0 {
+				commitFileBar = m.renderCommitFileBar(innerW)
+			}
 		} else {
 			title = "Visualizador de Commit"
 		}
+		controls = "l:lado/unif  f/F:arq commit  j/k:rolar  [/]:commit ant/prox  Esc/q:fechar"
+
+	case tabStashes:
+		stashes := m.visibleStashes()
+		if len(stashes) > 0 {
+			st := stashes[m.stashIdx]
+			title = fmt.Sprintf("Visualizador de Stash :: %s - %s (%d/%d)", st.Ref, st.Message, m.stashIdx+1, len(stashes))
+		} else {
+			title = "Visualizador de Stash"
+		}
+		controls = "l:lado/unif  j/k:rolar  [/]:stash ant/prox  Esc/q:fechar"
 	}
 
 	modeText := "[Unificado]"
@@ -720,28 +932,27 @@ func (m Model) renderDiffModal() string {
 		modeText = "[Lado a Lado]"
 	}
 	pct := int(m.diffModalViewport.ScrollPercent() * 100)
-	statusTag = fmt.Sprintf("%s  %d%%", modeText, pct)
+	statusTag := fmt.Sprintf("%s%s  %d%%", modeText, hunkInfo, pct)
 
 	headerLine := clampSingleLine(
 		m.styles.modalTitle.Render(truncateText(title, max(12, innerW-lipgloss.Width(statusTag)-2)))+"  "+m.styles.aheadBehind.Render(statusTag),
 		innerW,
 	)
 
-	var controls string
-	if m.activeTab == tabChanges {
-		controls = "l:alternar lado-a-lado/unificado   j/k:rolar   [/]:arquivo ant/prox   Espaco/s:stage   e:$EDITOR   Esc/q:fechar"
-	} else {
-		controls = "l:alternar lado-a-lado/unificado   j/k:rolar   [/]:commit ant/prox   Esc/q:fechar"
-	}
-
-	content := strings.Join([]string{
+	parts := []string{
 		headerLine,
 		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
+	}
+	if commitFileBar != "" {
+		parts = append(parts, commitFileBar)
+	}
+	parts = append(parts,
 		m.diffModalViewport.View(),
 		m.styles.itemMuted.Render(strings.Repeat("-", innerW)),
 		clampSingleLine(m.styles.itemMuted.Render(truncateText(controls, innerW)), innerW),
-	}, "\n")
+	)
 
+	content := strings.Join(parts, "\n")
 	clamped := clampBoxContent(content, innerW, innerH)
 	box := m.styles.paneActive.Width(modalW).Height(modalH).Render(clamped)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
@@ -760,6 +971,18 @@ func (m Model) renderModal() string {
 			"Nome da branch:\n" +
 			m.input.View() + "\n\n" +
 			m.styles.itemMuted.Render("Enter: criar e trocar   Esc: cancelar")
+
+	case modalRenameBranch:
+		body = m.styles.modalTitle.Render(fmt.Sprintf("Renomear branch '%s'", m.modalTarget)) + "\n\n" +
+			"Novo nome:\n" +
+			m.input.View() + "\n\n" +
+			m.styles.itemMuted.Render("Enter: renomear   Esc: cancelar")
+
+	case modalCreateStash:
+		body = m.styles.modalTitle.Render("Criar Stash") + "\n\n" +
+			"Mensagem do stash (opcional):\n" +
+			m.input.View() + "\n\n" +
+			m.styles.itemMuted.Render("Enter: guardar alteracoes   Esc: cancelar")
 
 	case modalCommit:
 		statusLine := m.styles.itemMuted.Render("Enter: commitar   Ctrl+G: gerar com IA   Esc: cancelar")
@@ -795,6 +1018,24 @@ func (m Model) renderModal() string {
 			m.styles.modalWarn.Render(fmt.Sprintf("Descartar todas as alteracoes em '%s'?", m.modalTarget)) + "\n" +
 			"Esta acao nao pode ser desfeita.\n\n" +
 			m.styles.itemMuted.Render("Enter/s: descartar   Esc/n: cancelar")
+
+	case modalDiscardHunk:
+		body = m.styles.modalTitle.Render("Descartar hunk") + "\n\n" +
+			m.styles.modalWarn.Render(fmt.Sprintf("Descartar este hunk de '%s'?", m.modalTarget)) + "\n" +
+			"Esta acao nao pode ser desfeita.\n\n" +
+			m.styles.itemMuted.Render("Enter/s: descartar hunk   Esc/n: cancelar")
+
+	case modalDropStash:
+		body = m.styles.modalTitle.Render("Descartar stash") + "\n\n" +
+			m.styles.modalWarn.Render(fmt.Sprintf("Excluir permanentemente o stash '%s'?", m.modalTarget)) + "\n" +
+			"Esta acao nao pode ser desfeita.\n\n" +
+			m.styles.itemMuted.Render("Enter/s: excluir stash   Esc/n: cancelar")
+
+	case modalAbortOp:
+		body = m.styles.modalTitle.Render("Abortar operacao") + "\n\n" +
+			m.styles.modalWarn.Render(fmt.Sprintf("Deseja abortar %s?", m.modalTarget)) + "\n" +
+			"O repositorio voltara ao estado anterior ao inicio da operacao.\n\n" +
+			m.styles.itemMuted.Render("Enter/s: abortar   Esc/n: cancelar")
 
 	case modalRevertCommit:
 		body = m.styles.modalTitle.Render("Reverter commit") + "\n\n" +

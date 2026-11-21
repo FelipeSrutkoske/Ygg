@@ -3,31 +3,41 @@ package tui
 import "charm.land/bubbles/v2/key"
 
 type keyMap struct {
-	Up            key.Binding
-	Down          key.Binding
-	Top           key.Binding
-	Bottom        key.Binding
-	PageUp        key.Binding
-	PageDown      key.Binding
-	NextTab       key.Binding
+	Up                 key.Binding
+	Down               key.Binding
+	Top                key.Binding
+	Bottom             key.Binding
+	PageUp             key.Binding
+	PageDown           key.Binding
+	NextTab            key.Binding
 	Tab1               key.Binding
 	Tab2               key.Binding
 	Tab3               key.Binding
+	Tab4               key.Binding
 	ToggleRemotes      key.Binding
 	Switch             key.Binding
 	NewBranch          key.Binding
+	RenameBranch       key.Binding
 	DeleteBranch       key.Binding
 	MergeBranch        key.Binding
+	RebaseBranch       key.Binding
 	Stage              key.Binding
 	StageAll           key.Binding
 	Commit             key.Binding
 	Stash              key.Binding
+	ApplyStash         key.Binding
 	Discard            key.Binding
 	ViewDiff           key.Binding
 	ToggleDiffMode     key.Binding
+	NextHunk           key.Binding
+	PrevHunk           key.Binding
 	RevertCommit       key.Binding
 	CherryPick         key.Binding
 	ToggleCommitBranch key.Binding
+	CommitPrevFile     key.Binding
+	CommitNextFile     key.Binding
+	ContinueOp         key.Binding
+	AbortOp            key.Binding
 	KeepOurs           key.Binding
 	AcceptTheirs       key.Binding
 	OpenEditor         key.Binding
@@ -82,6 +92,10 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("3"),
 			key.WithHelp("3", "aba Histórico"),
 		),
+		Tab4: key.NewBinding(
+			key.WithKeys("4"),
+			key.WithHelp("4", "aba Stashes"),
+		),
 		ToggleRemotes: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "mostrar/ocultar remotas"),
@@ -94,6 +108,10 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("n"),
 			key.WithHelp("n", "nova branch"),
 		),
+		RenameBranch: key.NewBinding(
+			key.WithKeys("M", "f2"),
+			key.WithHelp("M/F2", "renomear branch"),
+		),
 		DeleteBranch: key.NewBinding(
 			key.WithKeys("d"),
 			key.WithHelp("d", "excluir branch"),
@@ -102,9 +120,13 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("m"),
 			key.WithHelp("m", "mesclar na atual"),
 		),
+		RebaseBranch: key.NewBinding(
+			key.WithKeys("B"),
+			key.WithHelp("B", "rebase na branch"),
+		),
 		Stage: key.NewBinding(
 			key.WithKeys("space", "s"),
-			key.WithHelp("Espaço/s", "preparar/remover"),
+			key.WithHelp("Espaço/s", "preparar/remover (arq ou hunk)"),
 		),
 		StageAll: key.NewBinding(
 			key.WithKeys("shift+space", "S"),
@@ -116,11 +138,15 @@ func defaultKeyMap() keyMap {
 		),
 		Stash: key.NewBinding(
 			key.WithKeys("z"),
-			key.WithHelp("z", "stash / pop"),
+			key.WithHelp("z", "criar stash / abrir stashes"),
+		),
+		ApplyStash: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "aplicar stash"),
 		),
 		Discard: key.NewBinding(
 			key.WithKeys("x"),
-			key.WithHelp("x", "descartar alterações"),
+			key.WithHelp("x", "descartar alterações / dropar stash"),
 		),
 		ViewDiff: key.NewBinding(
 			key.WithKeys("enter", "d"),
@@ -129,6 +155,14 @@ func defaultKeyMap() keyMap {
 		ToggleDiffMode: key.NewBinding(
 			key.WithKeys("l"),
 			key.WithHelp("l", "lado a lado / unificado"),
+		),
+		NextHunk: key.NewBinding(
+			key.WithKeys("n"),
+			key.WithHelp("n", "próximo hunk"),
+		),
+		PrevHunk: key.NewBinding(
+			key.WithKeys("N"),
+			key.WithHelp("N", "hunk anterior"),
 		),
 		RevertCommit: key.NewBinding(
 			key.WithKeys("v"),
@@ -141,6 +175,22 @@ func defaultKeyMap() keyMap {
 		ToggleCommitBranch: key.NewBinding(
 			key.WithKeys("b"),
 			key.WithHelp("b", "alternar HEAD / branch"),
+		),
+		CommitPrevFile: key.NewBinding(
+			key.WithKeys("left", "h"),
+			key.WithHelp("←/h", "arquivo ant. do commit"),
+		),
+		CommitNextFile: key.NewBinding(
+			key.WithKeys("right", "l"),
+			key.WithHelp("→/l", "próx. arquivo do commit"),
+		),
+		ContinueOp: key.NewBinding(
+			key.WithKeys("C"),
+			key.WithHelp("C", "continuar merge/rebase"),
+		),
+		AbortOp: key.NewBinding(
+			key.WithKeys("A"),
+			key.WithHelp("A", "abortar merge/rebase"),
 		),
 		KeepOurs: key.NewBinding(
 			key.WithKeys("1"),
@@ -164,7 +214,7 @@ func defaultKeyMap() keyMap {
 		),
 		Pull: key.NewBinding(
 			key.WithKeys("p"),
-			key.WithHelp("p", "pull"),
+			key.WithHelp("p", "pull / pop stash"),
 		),
 		Push: key.NewBinding(
 			key.WithKeys("P"),
@@ -192,9 +242,9 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom, k.PageUp, k.PageDown, k.NextTab, k.Filter},
-		{k.Switch, k.ToggleRemotes, k.NewBranch, k.DeleteBranch, k.MergeBranch},
-		{k.Stage, k.StageAll, k.Commit, k.Stash, k.Discard, k.ViewDiff, k.ToggleDiffMode, k.OpenEditor},
-		{k.RevertCommit, k.CherryPick, k.ToggleCommitBranch, k.KeepOurs, k.AcceptTheirs},
+		{k.Switch, k.ToggleRemotes, k.NewBranch, k.RenameBranch, k.DeleteBranch, k.MergeBranch, k.RebaseBranch},
+		{k.Stage, k.StageAll, k.Commit, k.Stash, k.ApplyStash, k.Discard, k.ViewDiff, k.ToggleDiffMode, k.NextHunk, k.PrevHunk, k.OpenEditor},
+		{k.RevertCommit, k.CherryPick, k.ToggleCommitBranch, k.CommitPrevFile, k.CommitNextFile, k.ContinueOp, k.AbortOp, k.KeepOurs, k.AcceptTheirs},
 		{k.Fetch, k.Pull, k.Push, k.Refresh, k.Help, k.Quit},
 	}
 }

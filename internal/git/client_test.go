@@ -579,3 +579,328 @@ func TestShowCommit_RevertAndCherryPick(t *testing.T) {
 		t.Errorf("expected feat.txt to be removed after revert")
 	}
 }
+
+func TestStashListShowApplyPopDrop(t *testing.T) {
+	ctx := context.Background()
+	dir := initTestRepo(t)
+	writeTestFile(t, dir, "a.txt", "base\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "init")
+
+	client := NewClient(dir)
+
+	writeTestFile(t, dir, "a.txt", "first change\n")
+	if err := client.StashPush(ctx, "stash one"); err != nil {
+		t.Fatalf("StashPush 1: %v", err)
+	}
+	writeTestFile(t, dir, "a.txt", "second change\n")
+	if err := client.StashPush(ctx, "stash two"); err != nil {
+		t.Fatalf("StashPush 2: %v", err)
+	}
+
+	stashes, err := client.ListStashes(ctx)
+	if err != nil {
+		t.Fatalf("ListStashes: %v", err)
+	}
+	if len(stashes) != 2 {
+		t.Fatalf("got %d stashes, want 2: %+v", len(stashes), stashes)
+	}
+	if !strings.Contains(stashes[0].Message, "stash two") || !strings.Contains(stashes[1].Message, "stash one") {
+		t.Errorf("unexpected stash messages: %+v", stashes)
+	}
+
+	diff, err := client.ShowStash(ctx, "stash@{1}")
+	if err != nil {
+		t.Fatalf("ShowStash: %v", err)
+	}
+	if !strings.Contains(diff, "+first change") {
+		t.Errorf("ShowStash missing expected diff:\n%s", diff)
+	}
+
+	if err := client.StashApply(ctx, "stash@{1}"); err != nil {
+		t.Fatalf("StashApply: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if err != nil || string(data) != "first change\n" {
+		t.Fatalf("expected first change after StashApply, got %q (err=%v)", string(data), err)
+	}
+
+	// Clean working tree before dropping & popping
+	runGitTest(t, dir, "checkout", "--", "a.txt")
+
+	if err := client.StashDrop(ctx, "stash@{1}"); err != nil {
+		t.Fatalf("StashDrop: %v", err)
+	}
+	stashes, err = client.ListStashes(ctx)
+	if err != nil || len(stashes) != 1 {
+		t.Fatalf("expected 1 stash after drop, got %+v (err=%v)", stashes, err)
+	}
+
+	if err := client.StashPopRef(ctx, "stash@{0}"); err != nil {
+		t.Fatalf("StashPopRef: %v", err)
+	}
+	stashes, err = client.ListStashes(ctx)
+	if err != nil || len(stashes) != 0 {
+		t.Fatalf("expected 0 stashes after pop, got %+v (err=%v)", stashes, err)
+	}
+	data, _ = os.ReadFile(filepath.Join(dir, "a.txt"))
+	if string(data) != "second change\n" {
+		t.Errorf("expected second change after pop, got %q", string(data))
+	}
+}
+
+func TestApplyAndDiscardHunk(t *testing.T) {
+	ctx := context.Background()
+	dir := initTestRepo(t)
+
+	var origLines []string
+	for i := 1; i <= 25; i++ {
+		origLines = append(origLines, "line")
+	}
+	origLines[1] = "alpha"
+	origLines[23] = "omega"
+	writeTestFile(t, dir, "multi.txt", strings.Join(origLines, "\n")+"\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "init")
+
+	modLines := append([]string(nil), origLines...)
+	modLines[1] = "ALPHA_MOD"
+	modLines[23] = "OMEGA_MOD"
+	writeTestFile(t, dir, "multi.txt", strings.Join(modLines, "\n")+"\n")
+
+	client := NewClient(dir)
+	rawDiff := runGitTest(t, dir, "diff", "--", "multi.txt")
+
+	// Extract headers + individual hunks
+	hunk1Idx := strings.Index(rawDiff, "@@")
+	hunk2Idx := strings.LastIndex(rawDiff, "@@ -")
+	if hunk1Idx < 0 || hunk2Idx <= hunk1Idx {
+		t.Fatalf("expected 2 hunks in diff:\n%s", rawDiff)
+	}
+	headers := rawDiff[:hunk1Idx]
+	hunk1Patch := headers + rawDiff[hunk1Idx:hunk2Idx]
+	hunk2Patch := headers + rawDiff[hunk2Idx:] + "\n"
+
+	if err := client.ApplyHunkCached(ctx, hunk1Patch, false); err != nil {
+		t.Fatalf("ApplyHunkCached stage hunk1: %v", err)
+	}
+
+	stagedDiff, err := client.DiffStaged(ctx)
+	if err != nil {
+		t.Fatalf("DiffStaged: %v", err)
+	}
+	if !strings.Contains(stagedDiff, "+ALPHA_MOD") || strings.Contains(stagedDiff, "+OMEGA_MOD") {
+		t.Errorf("expected only hunk1 staged, got:\n%s", stagedDiff)
+	}
+
+	// Discard unstaged hunk2 while keeping staged hunk1
+	if err := client.DiscardHunk(ctx, hunk2Patch, false); err != nil {
+		t.Fatalf("DiscardHunk hunk2: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "multi.txt"))
+	if !strings.Contains(string(data), "ALPHA_MOD") || strings.Contains(string(data), "OMEGA_MOD") {
+		t.Errorf("expected ALPHA_MOD preserved and OMEGA_MOD discarded, got:\n%s", string(data))
+	}
+
+	// Unstage hunk1
+	if err := client.ApplyHunkCached(ctx, hunk1Patch, true); err != nil {
+		t.Fatalf("ApplyHunkCached reverse hunk1: %v", err)
+	}
+	stagedDiff, _ = client.DiffStaged(ctx)
+	if strings.TrimSpace(stagedDiff) != "" {
+		t.Errorf("expected empty staged diff after unstage hunk1, got:\n%s", stagedDiff)
+	}
+}
+
+func TestCommitFilesDiffAndPagination(t *testing.T) {
+	ctx := context.Background()
+	dir := initTestRepo(t)
+
+	for i := 1; i <= 5; i++ {
+		writeTestFile(t, dir, "a.txt", strings.Repeat("a", i)+"\n")
+		writeTestFile(t, dir, "b.txt", strings.Repeat("b", i)+"\n")
+		runGitTest(t, dir, "add", ".")
+		runGitTest(t, dir, "commit", "-m", "commit "+string(rune('0'+i)))
+	}
+	runGitTest(t, dir, "tag", "v1.0.0")
+
+	client := NewClient(dir)
+	page1, err := client.ListCommitsPage(ctx, "", 2, 0)
+	if err != nil || len(page1) != 2 {
+		t.Fatalf("page1 got %d (err=%v)", len(page1), err)
+	}
+	if !strings.Contains(page1[0].Decorations, "v1.0.0") {
+		t.Errorf("expected tag decoration on HEAD commit, got %q", page1[0].Decorations)
+	}
+
+	page2, err := client.ListCommitsPage(ctx, "", 2, 2)
+	if err != nil || len(page2) != 2 {
+		t.Fatalf("page2 got %d (err=%v)", len(page2), err)
+	}
+	if page1[0].Hash == page2[0].Hash || page2[0].Subject != "commit 3" {
+		t.Errorf("unexpected page2: %+v", page2)
+	}
+
+	files, err := client.ListCommitFiles(ctx, page1[0].Hash)
+	if err != nil || len(files) != 2 {
+		t.Fatalf("ListCommitFiles got %+v (err=%v)", files, err)
+	}
+
+	fileDiff, err := client.DiffCommitFile(ctx, page1[0].Hash, "a.txt")
+	if err != nil {
+		t.Fatalf("DiffCommitFile: %v", err)
+	}
+	if !strings.Contains(fileDiff, "a.txt") || strings.Contains(fileDiff, "b.txt") {
+		t.Errorf("expected diff scoped to a.txt only, got:\n%s", fileDiff)
+	}
+}
+
+func TestActiveOp_MergeRebaseContinueAbort(t *testing.T) {
+	ctx := context.Background()
+	dir := initTestRepo(t)
+	writeTestFile(t, dir, "f.txt", "base\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "base")
+
+	client := NewClient(dir)
+	if err := client.CreateBranch(ctx, "topic"); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	writeTestFile(t, dir, "f.txt", "topic\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "topic change")
+
+	if err := client.SwitchBranch(ctx, "main"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+	writeTestFile(t, dir, "f.txt", "main\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "main change")
+
+	// Merge conflict -> OpMerge -> Abort
+	res, err := client.MergeBranch(ctx, "topic")
+	if err != nil || !res.Conflicted {
+		t.Fatalf("expected conflicted merge, got res=%+v err=%v", res, err)
+	}
+	state, err := client.InspectRepo(ctx)
+	if err != nil || state.ActiveOp != OpMerge {
+		t.Fatalf("expected ActiveOp=OpMerge, got %v (err=%v)", state.ActiveOp, err)
+	}
+	if err := client.AbortActiveOp(ctx, OpMerge); err != nil {
+		t.Fatalf("AbortActiveOp merge: %v", err)
+	}
+	state, _ = client.InspectRepo(ctx)
+	if state.ActiveOp != OpNone {
+		t.Fatalf("expected OpNone after abort, got %v", state.ActiveOp)
+	}
+
+	// Merge conflict -> Resolve -> Continue
+	res, err = client.MergeBranch(ctx, "topic")
+	if err != nil || !res.Conflicted {
+		t.Fatalf("expected conflicted merge 2, got res=%+v err=%v", res, err)
+	}
+	if err := client.ResolveConflict(ctx, "f.txt", SideTheirs); err != nil {
+		t.Fatalf("ResolveConflict: %v", err)
+	}
+	if err := client.ContinueActiveOp(ctx, OpMerge); err != nil {
+		t.Fatalf("ContinueActiveOp merge: %v", err)
+	}
+	state, _ = client.InspectRepo(ctx)
+	if state.ActiveOp != OpNone || state.ChangedCount != 0 {
+		t.Fatalf("expected clean OpNone after continue, got %+v", state)
+	}
+
+	// Rebase conflict on topic -> OpRebase -> Abort
+	if err := client.SwitchBranch(ctx, "topic"); err != nil {
+		t.Fatalf("SwitchBranch topic: %v", err)
+	}
+	writeTestFile(t, dir, "f.txt", "topic2\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "topic2")
+
+	// Switch back to create divergence with main
+	runGitTest(t, dir, "checkout", "main")
+	writeTestFile(t, dir, "f.txt", "main2\n")
+	runGitTest(t, dir, "add", ".")
+	runGitTest(t, dir, "commit", "-m", "main2")
+	runGitTest(t, dir, "checkout", "topic")
+
+	rebaseRes, err := client.RebaseBranch(ctx, "main")
+	if err != nil || !rebaseRes.Conflicted {
+		t.Fatalf("expected rebase conflict, got res=%+v err=%v", rebaseRes, err)
+	}
+	state, _ = client.InspectRepo(ctx)
+	if state.ActiveOp != OpRebase {
+		t.Fatalf("expected ActiveOp=OpRebase, got %v", state.ActiveOp)
+	}
+	if err := client.AbortActiveOp(ctx, OpRebase); err != nil {
+		t.Fatalf("AbortActiveOp rebase: %v", err)
+	}
+	state, _ = client.InspectRepo(ctx)
+	if state.ActiveOp != OpNone {
+		t.Fatalf("expected OpNone after rebase abort, got %v", state.ActiveOp)
+	}
+}
+
+func TestBranches_RemoteTrackRenameAndRebase(t *testing.T) {
+	ctx := context.Background()
+	bare := t.TempDir()
+	runGitTest(t, bare, "init", "--bare", "-b", "main")
+
+	repoA := initTestRepo(t)
+	runGitTest(t, repoA, "remote", "add", "origin", bare)
+	writeTestFile(t, repoA, "a.txt", "base\n")
+	runGitTest(t, repoA, "add", ".")
+	runGitTest(t, repoA, "commit", "-m", "base")
+	runGitTest(t, repoA, "push", "-u", "origin", "main")
+
+	runGitTest(t, repoA, "checkout", "-b", "remote-feat")
+	writeTestFile(t, repoA, "r.txt", "remote\n")
+	runGitTest(t, repoA, "add", ".")
+	runGitTest(t, repoA, "commit", "-m", "remote feat")
+	runGitTest(t, repoA, "push", "-u", "origin", "remote-feat")
+
+	repoBParent := t.TempDir()
+	repoB := filepath.Join(repoBParent, "clone")
+	cmd := exec.Command("git", "clone", bare, repoB)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clone failed: %v\n%s", err, string(out))
+	}
+	runGitTest(t, repoB, "config", "user.name", "User B")
+	runGitTest(t, repoB, "config", "user.email", "b@example.com")
+
+	clientB := NewClient(repoB)
+	if err := clientB.SwitchBranch(ctx, "origin/remote-feat"); err != nil {
+		t.Fatalf("SwitchBranch remote-feat: %v", err)
+	}
+	state, err := clientB.InspectRepo(ctx)
+	if err != nil {
+		t.Fatalf("InspectRepo: %v", err)
+	}
+	if state.Branch != "remote-feat" || state.Upstream != "origin/remote-feat" {
+		t.Errorf("expected tracked local branch remote-feat -> origin/remote-feat, got %+v", state)
+	}
+
+	if err := clientB.RenameBranch(ctx, "remote-feat", "local-renamed"); err != nil {
+		t.Fatalf("RenameBranch: %v", err)
+	}
+	state, _ = clientB.InspectRepo(ctx)
+	if state.Branch != "local-renamed" {
+		t.Errorf("expected renamed branch local-renamed, got %q", state.Branch)
+	}
+
+	// Clean rebase on main
+	runGitTest(t, repoB, "checkout", "main")
+	writeTestFile(t, repoB, "m.txt", "main new\n")
+	runGitTest(t, repoB, "add", ".")
+	runGitTest(t, repoB, "commit", "-m", "main new")
+	runGitTest(t, repoB, "checkout", "local-renamed")
+
+	rebaseRes, err := clientB.RebaseBranch(ctx, "main")
+	if err != nil || rebaseRes.Conflicted {
+		t.Fatalf("expected clean rebase, got res=%+v err=%v", rebaseRes, err)
+	}
+	if _, err := os.Stat(filepath.Join(repoB, "m.txt")); err != nil {
+		t.Errorf("expected m.txt after rebase: %v", err)
+	}
+}

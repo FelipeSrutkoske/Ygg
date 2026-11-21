@@ -24,10 +24,36 @@ func (k RepoKind) String() string {
 	}
 }
 
+type ActiveOpKind int
+
+const (
+	OpNone ActiveOpKind = iota
+	OpMerge
+	OpRebase
+	OpCherryPick
+	OpRevert
+)
+
+func (k ActiveOpKind) Label() string {
+	switch k {
+	case OpMerge:
+		return "MERGE EM ANDAMENTO"
+	case OpRebase:
+		return "REBASE EM ANDAMENTO"
+	case OpCherryPick:
+		return "CHERRY-PICK EM ANDAMENTO"
+	case OpRevert:
+		return "REVERT EM ANDAMENTO"
+	default:
+		return ""
+	}
+}
+
 type RepoState struct {
 	RootDir       string
 	RepoName      string
 	Kind          RepoKind
+	ActiveOp      ActiveOpKind
 	Branch        string
 	Upstream      string
 	HeadHash      string
@@ -66,6 +92,20 @@ type Commit struct {
 	Hash         string
 	Subject      string
 	Author       string
+	RelativeDate string
+	Decorations  string
+}
+
+type CommitFile struct {
+	Status  string
+	Path    string
+	OldPath string
+}
+
+type StashEntry struct {
+	Index        int
+	Ref          string
+	Message      string
 	RelativeDate string
 }
 
