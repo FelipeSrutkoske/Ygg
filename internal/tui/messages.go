@@ -9,8 +9,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/FelipeSrutkoske/go-vit/internal/ai"
-	"github.com/FelipeSrutkoske/go-vit/internal/git"
+	"github.com/FelipeSrutkoske/Ygg/internal/ai"
+	"github.com/FelipeSrutkoske/Ygg/internal/git"
 )
 
 const autoRefreshInterval = 2 * time.Second
@@ -216,7 +216,7 @@ func switchBranchCmd(client *git.Client, name string) tea.Cmd {
 func stashAndSwitchCmd(client *git.Client, name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		if err := client.StashPush(ctx, "go-vit: stash automatico antes de trocar para "+name); err != nil {
+		if err := client.StashPush(ctx, "ygg: stash automatico antes de trocar para "+name); err != nil {
 			return actionDoneMsg{lastCmd: client.LastCommand(), err: err}
 		}
 		if err := client.SwitchBranch(ctx, name); err != nil {

@@ -6,8 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/FelipeSrutkoske/go-vit/internal/config"
-	"github.com/FelipeSrutkoske/go-vit/internal/git"
+	"github.com/FelipeSrutkoske/Ygg/internal/config"
+	"github.com/FelipeSrutkoske/Ygg/internal/git"
 )
 
 func (m Model) View() tea.View {
@@ -16,7 +16,7 @@ func (m Model) View() tea.View {
 	}
 
 	if m.width == 0 || m.height == 0 {
-		v := tea.NewView("Carregando go-vit...")
+		v := tea.NewView("Carregando Ygg...")
 		v.AltScreen = true
 		v.ReportFocus = true
 		return v
@@ -302,7 +302,7 @@ func (m Model) renderHeader() string {
 		opBadge = "  " + m.styles.statusConflict.Render(m.state.ActiveOp.Label()+" (C:cont A:abort)")
 	}
 
-	left := m.styles.repoName.Render("go-vit :: "+truncateText(repo, 24)) + "  " + branchBadge + upstreamStr + syncStr + "  " + statusBadge + opBadge
+	left := m.styles.repoName.Render("Ygg :: "+truncateText(repo, 24)) + "  " + branchBadge + upstreamStr + syncStr + "  " + statusBadge + opBadge
 	if m.loading {
 		left += "  " + m.spinner.View()
 	}
@@ -965,7 +965,7 @@ func (m Model) renderModal() string {
 	var body string
 	switch m.modal {
 	case modalHelp:
-		body = m.styles.modalTitle.Render("Atalhos do go-vit") + "\n\n" +
+		body = m.styles.modalTitle.Render("Atalhos do Ygg") + "\n\n" +
 			m.help.FullHelpView(m.keys.FullHelp()) + "\n\n" +
 			m.styles.itemMuted.Render("Pressione Esc, ? ou Enter para fechar")
 
@@ -1013,7 +1013,7 @@ func (m Model) renderModal() string {
 		body = m.styles.modalTitle.Render("Configurar chave de API (IA)") + "\n\n" +
 			errBlock +
 			m.styles.itemMuted.Render("Chave atual: "+currentMasked) + "\n" +
-			"Cole sua chave de API (salva com permissao 0600 em ~/.config/go-vit/config.json):\n" +
+			"Cole sua chave de API (salva com permissao 0600 em ~/.config/ygg/config.json):\n" +
 			m.input.View() + "\n\n" +
 			m.styles.itemMuted.Render(hint)
 
@@ -1089,7 +1089,7 @@ func (m Model) renderModal() string {
 func (m Model) renderNotARepo() string {
 	msg := m.styles.modalTitle.Render("Nenhum repositorio Git encontrado") + "\n\n" +
 		fmt.Sprintf("O diretorio '%s' nao pertence a um repositorio Git.", m.client.Dir()) + "\n" +
-		"Execute 'git init' ou abra o go-vit dentro de um projeto Git.\n\n" +
+		"Execute 'git init' ou abra o ygg dentro de um projeto Git.\n\n" +
 		m.styles.itemMuted.Render("R: verificar novamente   q: sair")
 	box := m.styles.modalBox.Render(msg)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)

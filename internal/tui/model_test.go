@@ -8,9 +8,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/FelipeSrutkoske/go-vit/internal/ai"
-	"github.com/FelipeSrutkoske/go-vit/internal/config"
-	"github.com/FelipeSrutkoske/go-vit/internal/git"
+	"github.com/FelipeSrutkoske/Ygg/internal/ai"
+	"github.com/FelipeSrutkoske/Ygg/internal/config"
+	"github.com/FelipeSrutkoske/Ygg/internal/git"
 )
 
 var ansiSeqRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -30,7 +30,7 @@ func setupLoadedTestModel() Model {
 
 	updated, _ = m.Update(repoLoadedMsg{
 		state: git.RepoState{
-			RepoName:     "go-vit",
+			RepoName:     "ygg",
 			Kind:         git.KindNormal,
 			Branch:       "main",
 			Upstream:     "origin/main",
@@ -307,7 +307,7 @@ index 1111111..2222222 100644
 
 				updated, _ = m.Update(repoLoadedMsg{
 					state: git.RepoState{
-						RepoName:      "go-vit-stress-repo-name",
+						RepoName:      "ygg-stress-repo-name",
 						Kind:          git.KindNormal,
 						ActiveOp:      git.OpMerge,
 						Branch:        branches[0].Name,

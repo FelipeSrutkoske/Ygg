@@ -1,14 +1,16 @@
-# go-vit
+# Ygg (Yggdrasil)
 
-**go-vit** é um gerenciador visual de Git para o terminal (TUI), feito em Go, pensado para ser limpo, intuitivo e amigável tanto para iniciantes quanto para o uso diário.
+**Ygg** é um gerenciador visual de Git para o terminal (TUI), feito em Go, pensado para ser limpo, intuitivo e amigável tanto para iniciantes quanto para o uso diário.
 
 ## Instalação
 
 Certifique-se de ter o **Go** e o **Git** instalados no sistema e execute:
 
 ```bash
-go install github.com/FelipeSrutkoske/go-vit@latest
+go install github.com/FelipeSrutkoske/Ygg@latest
 ```
+
+> **Dica:** como o nome do módulo termina em `Ygg`, o `go install` gera o binário `Ygg` em `$GOPATH/bin`. Se preferir chamar com `ygg` em minúsculo no terminal, você pode compilar diretamente com `go build -o "$(go env GOPATH)/bin/ygg" .` ou criar um alias/symlink.
 
 ## Uso
 
@@ -16,16 +18,16 @@ Execute no diretório do repositório desejado ou informe o caminho como argumen
 
 ```bash
 # Abre o repositório no diretório atual
-go-vit
+ygg
 
 # Abre um repositório em outro caminho
-go-vit /caminho/do/repositorio
+ygg /caminho/do/repositorio
 ```
 
 Opções e comandos disponíveis:
 
-- `config`: Verifica ou configura a chave de API de IA (`~/.config/go-vit/config.json`)
-- `update`, `upgrade`: Atualiza o `go-vit` para a versão mais recente via `go install`
+- `config`: Verifica ou configura a chave de API de IA (`~/.config/ygg/config.json`)
+- `update`, `upgrade`: Atualiza o `ygg` para a versão mais recente via `go install`
 - `-h`, `--help`: Exibe a mensagem de ajuda
 - `-v`, `--version`: Exibe a versão instalada
 
@@ -57,7 +59,7 @@ Opções e comandos disponíveis:
 | `R` / `F5` / `Ctrl+R` | Atualizar informações do repositório (também atualiza automaticamente) |
 | `Ctrl+K` | Configurar ou trocar a chave de API de IA |
 | `?` | Exibir / ocultar tela de ajuda |
-| `q` / `Ctrl+C` | Sair do go-vit |
+| `q` / `Ctrl+C` | Sair do Ygg |
 
 ### Aba Branches (`1`)
 

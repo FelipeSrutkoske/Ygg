@@ -10,18 +10,18 @@ import (
 
 const (
 	DefaultAIModel = "minimaxai/minimax-m3.1-flash"
-	appDirName     = "go-vit"
+	appDirName     = "ygg"
 	configFileName = "config.json"
 )
 
-// Config stores user-level persistent settings for go-vit.
+// Config stores user-level persistent settings for Ygg.
 // Sensitive values like AIAPIKey are stored with 0600 permissions.
 type Config struct {
 	AIAPIKey string `json:"ai_api_key,omitempty"`
 	AIModel  string `json:"ai_model,omitempty"`
 }
 
-// ConfigPath returns the path to the user's go-vit config file.
+// ConfigPath returns the path to the user's Ygg config file.
 func ConfigPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -59,7 +59,7 @@ func applyEnv(cfg Config) Config {
 	if key := strings.TrimSpace(os.Getenv("AI_API_KEY")); key != "" {
 		cfg.AIAPIKey = key
 	}
-	if model := strings.TrimSpace(os.Getenv("GO_VIT_AI_MODEL")); model != "" {
+	if model := strings.TrimSpace(os.Getenv("YGG_AI_MODEL")); model != "" {
 		cfg.AIModel = model
 	}
 	if strings.TrimSpace(cfg.AIModel) == "" {

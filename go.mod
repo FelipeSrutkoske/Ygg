@@ -1,4 +1,4 @@
-module github.com/FelipeSrutkoske/go-vit
+module github.com/FelipeSrutkoske/Ygg
 
 go 1.27.3
 

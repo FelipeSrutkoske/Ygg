@@ -10,7 +10,7 @@ func TestSaveAndLoad_PermissionsAndEnvOverride(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 	t.Setenv("AI_API_KEY", "")
-	t.Setenv("GO_VIT_AI_MODEL", "")
+	t.Setenv("YGG_AI_MODEL", "")
 
 	want := Config{
 		AIAPIKey: "api-secret-1234567890",

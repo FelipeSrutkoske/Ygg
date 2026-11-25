@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/FelipeSrutkoske/go-vit/internal/config"
+	"github.com/FelipeSrutkoske/Ygg/internal/config"
 )
 
 func TestRunConfig_SetsAndUpdatesAPIKey(t *testing.T) {

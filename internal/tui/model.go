@@ -11,9 +11,9 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"github.com/FelipeSrutkoske/go-vit/internal/ai"
-	"github.com/FelipeSrutkoske/go-vit/internal/config"
-	"github.com/FelipeSrutkoske/go-vit/internal/git"
+	"github.com/FelipeSrutkoske/Ygg/internal/ai"
+	"github.com/FelipeSrutkoske/Ygg/internal/config"
+	"github.com/FelipeSrutkoske/Ygg/internal/git"
 	"github.com/atotto/clipboard"
 )
 
