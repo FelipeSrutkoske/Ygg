@@ -6,11 +6,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/FelipeSrutkoske/go-vit/internal/ai"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
 )
+
+const autoRefreshInterval = 2 * time.Second
+
+type autoRefreshTickMsg struct{}
+
+func autoRefreshTickCmd() tea.Cmd {
+	return tea.Tick(autoRefreshInterval, func(time.Time) tea.Msg {
+		return autoRefreshTickMsg{}
+	})
+}
 
 type repoLoadedMsg struct {
 	state    git.RepoState
@@ -18,12 +29,14 @@ type repoLoadedMsg struct {
 	status   []git.FileStatus
 	stashes  []git.StashEntry
 	lastCmd  string
+	silent   bool
 	err      error
 }
 
 type commitsLoadedMsg struct {
 	ref     string
 	commits []git.Commit
+	silent  bool
 	err     error
 }
 
@@ -35,9 +48,10 @@ type moreCommitsLoadedMsg struct {
 }
 
 type diffLoadedMsg struct {
-	path string
-	diff string
-	err  error
+	path   string
+	diff   string
+	silent bool
+	err    error
 }
 
 type commitDiffLoadedMsg struct {
@@ -45,13 +59,15 @@ type commitDiffLoadedMsg struct {
 	fileIdx int
 	files   []git.CommitFile
 	diff    string
+	silent  bool
 	err     error
 }
 
 type stashDiffLoadedMsg struct {
-	ref  string
-	diff string
-	err  error
+	ref    string
+	diff   string
+	silent bool
+	err    error
 }
 
 type actionDoneMsg struct {
@@ -80,22 +96,30 @@ type editorFinishedMsg struct {
 }
 
 func loadRepoCmd(client *git.Client, includeRemote bool) tea.Cmd {
+	return loadRepoWithSilentCmd(client, includeRemote, false)
+}
+
+func loadRepoSilentCmd(client *git.Client, includeRemote bool) tea.Cmd {
+	return loadRepoWithSilentCmd(client, includeRemote, true)
+}
+
+func loadRepoWithSilentCmd(client *git.Client, includeRemote, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		state, err := client.InspectRepo(ctx)
 		if err != nil {
-			return repoLoadedMsg{lastCmd: client.LastCommand(), err: err}
+			return repoLoadedMsg{lastCmd: client.LastCommand(), silent: silent, err: err}
 		}
 		if state.Kind == git.KindNotARepo {
-			return repoLoadedMsg{state: state, lastCmd: client.LastCommand()}
+			return repoLoadedMsg{state: state, lastCmd: client.LastCommand(), silent: silent}
 		}
 		branches, err := client.ListBranches(ctx, includeRemote)
 		if err != nil {
-			return repoLoadedMsg{state: state, lastCmd: client.LastCommand(), err: err}
+			return repoLoadedMsg{state: state, lastCmd: client.LastCommand(), silent: silent, err: err}
 		}
 		status, err := client.ListStatus(ctx)
 		if err != nil {
-			return repoLoadedMsg{state: state, branches: branches, lastCmd: client.LastCommand(), err: err}
+			return repoLoadedMsg{state: state, branches: branches, lastCmd: client.LastCommand(), silent: silent, err: err}
 		}
 		stashes, _ := client.ListStashes(ctx)
 		return repoLoadedMsg{
@@ -104,14 +128,19 @@ func loadRepoCmd(client *git.Client, includeRemote bool) tea.Cmd {
 			status:   status,
 			stashes:  stashes,
 			lastCmd:  client.LastCommand(),
+			silent:   silent,
 		}
 	}
 }
 
 func loadCommitsCmd(client *git.Client, ref string) tea.Cmd {
+	return loadCommitsWithSilentCmd(client, ref, false)
+}
+
+func loadCommitsWithSilentCmd(client *git.Client, ref string, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		commits, err := client.ListCommits(context.Background(), ref, 50)
-		return commitsLoadedMsg{ref: ref, commits: commits, err: err}
+		return commitsLoadedMsg{ref: ref, commits: commits, silent: silent, err: err}
 	}
 }
 
@@ -123,13 +152,21 @@ func loadMoreCommitsCmd(client *git.Client, ref string, skip, limit int) tea.Cmd
 }
 
 func loadDiffCmd(client *git.Client, file git.FileStatus) tea.Cmd {
+	return loadDiffWithSilentCmd(client, file, false)
+}
+
+func loadDiffWithSilentCmd(client *git.Client, file git.FileStatus, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		diff, err := client.DiffFile(context.Background(), file)
-		return diffLoadedMsg{path: file.Path, diff: diff, err: err}
+		return diffLoadedMsg{path: file.Path, diff: diff, silent: silent, err: err}
 	}
 }
 
 func loadCommitDiffCmd(client *git.Client, hash string) tea.Cmd {
+	return loadCommitDiffWithSilentCmd(client, hash, false)
+}
+
+func loadCommitDiffWithSilentCmd(client *git.Client, hash string, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		diff, err := client.ShowCommit(ctx, hash)
@@ -137,25 +174,33 @@ func loadCommitDiffCmd(client *git.Client, hash string) tea.Cmd {
 		if err == nil {
 			files, _ = client.ListCommitFiles(ctx, hash)
 		}
-		return commitDiffLoadedMsg{hash: hash, fileIdx: 0, files: files, diff: diff, err: err}
+		return commitDiffLoadedMsg{hash: hash, fileIdx: 0, files: files, diff: diff, silent: silent, err: err}
 	}
 }
 
 func loadCommitFileDiffCmd(client *git.Client, hash string, fileIdx int, files []git.CommitFile) tea.Cmd {
+	return loadCommitFileDiffWithSilentCmd(client, hash, fileIdx, files, false)
+}
+
+func loadCommitFileDiffWithSilentCmd(client *git.Client, hash string, fileIdx int, files []git.CommitFile, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		if fileIdx <= 0 || fileIdx > len(files) {
 			diff, err := client.ShowCommit(context.Background(), hash)
-			return commitDiffLoadedMsg{hash: hash, fileIdx: 0, files: files, diff: diff, err: err}
+			return commitDiffLoadedMsg{hash: hash, fileIdx: 0, files: files, diff: diff, silent: silent, err: err}
 		}
 		diff, err := client.DiffCommitFile(context.Background(), hash, files[fileIdx-1].Path)
-		return commitDiffLoadedMsg{hash: hash, fileIdx: fileIdx, files: files, diff: diff, err: err}
+		return commitDiffLoadedMsg{hash: hash, fileIdx: fileIdx, files: files, diff: diff, silent: silent, err: err}
 	}
 }
 
 func loadStashDiffCmd(client *git.Client, ref string) tea.Cmd {
+	return loadStashDiffWithSilentCmd(client, ref, false)
+}
+
+func loadStashDiffWithSilentCmd(client *git.Client, ref string, silent bool) tea.Cmd {
 	return func() tea.Msg {
 		diff, err := client.ShowStash(context.Background(), ref)
-		return stashDiffLoadedMsg{ref: ref, diff: diff, err: err}
+		return stashDiffLoadedMsg{ref: ref, diff: diff, silent: silent, err: err}
 	}
 }
 

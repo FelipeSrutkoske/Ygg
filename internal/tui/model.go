@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/FelipeSrutkoske/go-vit/internal/ai"
 	"github.com/FelipeSrutkoske/go-vit/internal/config"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
 	"github.com/atotto/clipboard"
@@ -81,14 +83,16 @@ type Model struct {
 	activeHunkIdx     int
 	diffModalViewport viewport.Model
 
-	modal           modalKind
-	modalTarget     string
-	modalFile       git.FileStatus
-	modalHunkPatch  string
-	modalHunkStaged bool
-	returnToDiff    bool
-	modalChoice     int
-	input           textinput.Model
+	modal             modalKind
+	apiKeyReturnModal modalKind
+	apiKeyRunGenerate bool
+	modalTarget       string
+	modalFile         git.FileStatus
+	modalHunkPatch    string
+	modalHunkStaged   bool
+	returnToDiff      bool
+	modalChoice       int
+	input             textinput.Model
 
 	viewport viewport.Model
 	spinner  spinner.Model
@@ -138,7 +142,7 @@ func NewModel(client *git.Client) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, loadRepoCmd(m.client, m.includeRemote))
+	return tea.Batch(m.spinner.Tick, loadRepoCmd(m.client, m.includeRemote), autoRefreshTickCmd())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -162,26 +166,65 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
+	case autoRefreshTickMsg:
+		if m.quitting {
+			return m, nil
+		}
+		if m.shouldAutoRefresh() {
+			return m, tea.Batch(autoRefreshTickCmd(), loadRepoSilentCmd(m.client, m.includeRemote))
+		}
+		return m, autoRefreshTickCmd()
+
+	case tea.FocusMsg:
+		if !m.quitting && m.shouldAutoRefresh() {
+			return m, loadRepoSilentCmd(m.client, m.includeRemote)
+		}
+		return m, nil
+
 	case repoLoadedMsg:
-		m.loading = false
-		if msg.lastCmd != "" {
-			m.lastGitCmd = msg.lastCmd
+		if !msg.silent {
+			m.loading = false
+			if msg.lastCmd != "" {
+				m.lastGitCmd = msg.lastCmd
+			}
 		}
 		if msg.err != nil {
-			m.errMsg = msg.err.Error()
+			if !msg.silent {
+				m.errMsg = msg.err.Error()
+			}
 			return m, nil
+		}
+		prevFilePath := ""
+		if msg.silent && m.activeTab == tabChanges {
+			if vis := m.visibleFiles(); len(vis) > 0 && m.fileIdx >= 0 && m.fileIdx < len(vis) {
+				prevFilePath = vis[m.fileIdx].Path
+			}
 		}
 		m.state = msg.state
 		m.branches = msg.branches
 		m.files = msg.status
 		m.stashes = msg.stashes
+		if prevFilePath != "" {
+			for i, f := range m.visibleFiles() {
+				if f.Path == prevFilePath {
+					m.fileIdx = i
+					break
+				}
+			}
+		}
 		m.clampCursors()
 		if m.activeTab == tabCommits && m.state.Kind != git.KindNotARepo {
-			return m, loadCommitsCmd(m.client, m.historyRef())
+			return m, loadCommitsWithSilentCmd(m.client, m.historyRef(), msg.silent)
 		}
-		return m, m.refreshSelectionCmd()
+		return m, m.refreshSelectionWithSilentCmd(msg.silent)
 
 	case commitsLoadedMsg:
+		if msg.silent && msg.err != nil {
+			return m, nil
+		}
+		if msg.silent && msg.ref == m.commitsRef && commitsEqual(m.commits, msg.commits) {
+			return m, nil
+		}
 		m.commitsRef = msg.ref
 		m.loadingMoreCommits = false
 		m.commitFileIdx = 0
@@ -200,7 +243,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeTab == tabCommits {
 			vis := m.visibleCommits()
 			if len(vis) > 0 {
-				return m, loadCommitDiffCmd(m.client, vis[m.commitIdx].Hash)
+				return m, loadCommitDiffWithSilentCmd(m.client, vis[m.commitIdx].Hash, msg.silent)
 			}
 			m.commitDiffText = ""
 			m.commitDiffHash = ""
@@ -233,6 +276,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case diffLoadedMsg:
+		if msg.silent {
+			if msg.err != nil {
+				return m, nil
+			}
+			if msg.path == m.diffPath && msg.diff == m.diffText {
+				return m, nil
+			}
+		}
 		m.diffPath = msg.path
 		if msg.err != nil {
 			m.diffText = ""
@@ -242,14 +293,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		prevOffset := m.viewport.YOffset()
+		prevModalOffset := m.diffModalViewport.YOffset()
 		m.diffText = msg.diff
 		m.syncRightPane()
+		if msg.silent {
+			m.viewport.SetYOffset(prevOffset)
+		}
 		if m.modal == modalDiffView && m.activeTab == tabChanges {
 			m.syncDiffModal()
+			if msg.silent {
+				m.diffModalViewport.SetYOffset(prevModalOffset)
+			}
 		}
 		return m, nil
 
 	case commitDiffLoadedMsg:
+		if msg.silent {
+			if msg.err != nil {
+				return m, nil
+			}
+			if msg.hash == m.commitDiffHash && msg.fileIdx == m.commitFileIdx && msg.diff == m.commitDiffText {
+				return m, nil
+			}
+		}
 		m.commitDiffHash = msg.hash
 		m.commitFiles = msg.files
 		if msg.fileIdx <= 0 || msg.fileIdx > len(msg.files) {
@@ -265,15 +332,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		prevOffset := m.viewport.YOffset()
+		prevModalOffset := m.diffModalViewport.YOffset()
 		m.commitDiffText = msg.diff
 		m.syncRightPane()
+		if msg.silent {
+			m.viewport.SetYOffset(prevOffset)
+		}
 		if m.modal == modalDiffView && m.activeTab == tabCommits {
 			m.syncDiffModal()
-			m.diffModalViewport.GotoTop()
+			if msg.silent {
+				m.diffModalViewport.SetYOffset(prevModalOffset)
+			} else {
+				m.diffModalViewport.GotoTop()
+			}
 		}
 		return m, nil
 
 	case stashDiffLoadedMsg:
+		if msg.silent {
+			if msg.err != nil {
+				return m, nil
+			}
+			if msg.ref == m.stashDiffRef && msg.diff == m.stashDiffText {
+				return m, nil
+			}
+		}
 		m.stashDiffRef = msg.ref
 		if msg.err != nil {
 			m.stashDiffText = ""
@@ -283,11 +367,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		prevOffset := m.viewport.YOffset()
+		prevModalOffset := m.diffModalViewport.YOffset()
 		m.stashDiffText = msg.diff
 		m.syncRightPane()
+		if msg.silent {
+			m.viewport.SetYOffset(prevOffset)
+		}
 		if m.modal == modalDiffView && m.activeTab == tabStashes {
 			m.syncDiffModal()
-			m.diffModalViewport.GotoTop()
+			if msg.silent {
+				m.diffModalViewport.SetYOffset(prevModalOffset)
+			} else {
+				m.diffModalViewport.GotoTop()
+			}
 		}
 		return m, nil
 
@@ -308,6 +401,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commitMsgGeneratedMsg:
 		m.loading = false
 		if msg.err != nil {
+			if errors.Is(msg.err, ai.ErrUnauthorized) {
+				m.openAPIKeyModal(modalCommit, true, msg.err.Error())
+				return m, nil
+			}
 			m.errMsg = msg.err.Error()
 			return m, nil
 		}
@@ -371,6 +468,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.reloadRepo()
 
+	case tea.PasteMsg:
+		if m.filtering {
+			var cmd tea.Cmd
+			m.filterInput, cmd = m.filterInput.Update(msg)
+			m.filterQuery = strings.TrimSpace(m.filterInput.Value())
+			m.clampCursors()
+			return m, tea.Batch(cmd, m.refreshSelectionCmd())
+		}
+		switch m.modal {
+		case modalAPIKey:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(tea.PasteMsg{Content: strings.TrimSpace(msg.Content)})
+			return m, cmd
+		case modalCreateBranch, modalRenameBranch, modalCreateStash, modalCommit:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		if m.modal != modalNone {
 			return m.handleModalKey(msg)
@@ -387,6 +504,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) reloadRepo() tea.Cmd {
 	m.loading = true
 	return tea.Batch(m.spinner.Tick, loadRepoCmd(m.client, m.includeRemote))
+}
+
+func (m Model) shouldAutoRefresh() bool {
+	return !m.loading && !m.filtering && (m.modal == modalNone || m.modal == modalDiffView)
+}
+
+func commitsEqual(a, b []git.Commit) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Hash != b[i].Hash || a[i].Decorations != b[i].Decorations {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Model) openAPIKeyModal(returnTo modalKind, runGenerate bool, errMsg string) {
+	m.apiKeyReturnModal = returnTo
+	m.apiKeyRunGenerate = runGenerate
+	m.errMsg = errMsg
+	m.modal = modalAPIKey
+	m.input.SetValue("")
+	m.input.Placeholder = "cole sua chave de API..."
+	m.input.EchoMode = textinput.EchoPassword
+	m.input.EchoCharacter = '•'
+	m.input.Focus()
 }
 
 func (m Model) historyRef() string {
@@ -486,6 +631,10 @@ func (m *Model) clampCursors() {
 }
 
 func (m *Model) refreshSelectionCmd() tea.Cmd {
+	return m.refreshSelectionWithSilentCmd(false)
+}
+
+func (m *Model) refreshSelectionWithSilentCmd(silent bool) tea.Cmd {
 	if m.state.Kind == git.KindNotARepo {
 		return nil
 	}
@@ -499,7 +648,7 @@ func (m *Model) refreshSelectionCmd() tea.Cmd {
 			m.syncRightPane()
 			return nil
 		}
-		return loadCommitsCmd(m.client, branches[m.branchIdx].Name)
+		return loadCommitsWithSilentCmd(m.client, branches[m.branchIdx].Name, silent)
 
 	case tabChanges:
 		files := m.visibleFiles()
@@ -509,7 +658,7 @@ func (m *Model) refreshSelectionCmd() tea.Cmd {
 			m.syncRightPane()
 			return nil
 		}
-		return loadDiffCmd(m.client, files[m.fileIdx])
+		return loadDiffWithSilentCmd(m.client, files[m.fileIdx], silent)
 
 	case tabCommits:
 		commits := m.visibleCommits()
@@ -521,7 +670,7 @@ func (m *Model) refreshSelectionCmd() tea.Cmd {
 			m.syncRightPane()
 			return nil
 		}
-		return m.loadSelectedCommitFileCmd()
+		return m.loadSelectedCommitFileWithSilentCmd(silent)
 
 	case tabStashes:
 		stashes := m.visibleStashes()
@@ -531,22 +680,26 @@ func (m *Model) refreshSelectionCmd() tea.Cmd {
 			m.syncRightPane()
 			return nil
 		}
-		return loadStashDiffCmd(m.client, stashes[m.stashIdx].Ref)
+		return loadStashDiffWithSilentCmd(m.client, stashes[m.stashIdx].Ref, silent)
 	}
 
 	return nil
 }
 
 func (m *Model) loadSelectedCommitFileCmd() tea.Cmd {
+	return m.loadSelectedCommitFileWithSilentCmd(false)
+}
+
+func (m *Model) loadSelectedCommitFileWithSilentCmd(silent bool) tea.Cmd {
 	commits := m.visibleCommits()
 	if len(commits) == 0 {
 		return nil
 	}
 	hash := commits[m.commitIdx].Hash
 	if m.commitFileIdx <= 0 || m.commitFileIdx > len(m.commitFiles) {
-		return loadCommitDiffCmd(m.client, hash)
+		return loadCommitDiffWithSilentCmd(m.client, hash, silent)
 	}
-	return loadCommitFileDiffCmd(m.client, hash, m.commitFileIdx, m.commitFiles)
+	return loadCommitFileDiffWithSilentCmd(m.client, hash, m.commitFileIdx, m.commitFiles, silent)
 }
 
 func (m *Model) openDiffModal() {
@@ -594,6 +747,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		m.status = "Atualizando..."
 		return m, m.reloadRepo()
+	}
+	if key.Matches(msg, m.keys.ConfigureAPIKey) {
+		m.openAPIKeyModal(modalNone, false, "")
+		return m, nil
 	}
 	if msg.String() == "esc" && m.filterQuery != "" {
 		m.filterQuery = ""
@@ -1095,6 +1252,10 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case k == "esc" || k == "q" || k == "enter":
 			m.modal = modalNone
 			return m, nil
+		case key.Matches(msg, m.keys.Refresh):
+			m.errMsg = ""
+			m.status = "Atualizando..."
+			return m, m.reloadRepo()
 		case key.Matches(msg, m.keys.ToggleDiffMode):
 			m.diffModeSet = true
 			m.sideBySideDiff = !m.sideBySideDiff
@@ -1319,6 +1480,9 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.modal = modalNone
 			m.input.Blur()
 			return m, nil
+		case "ctrl+k":
+			m.openAPIKeyModal(modalCommit, false, "")
+			return m, nil
 		case "ctrl+g":
 			cfg, err := config.Load()
 			if err != nil {
@@ -1326,12 +1490,7 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if strings.TrimSpace(cfg.AIAPIKey) == "" {
-				m.modal = modalAPIKey
-				m.input.SetValue("")
-				m.input.Placeholder = "cole sua chave de API..."
-				m.input.EchoMode = textinput.EchoPassword
-				m.input.EchoCharacter = '•'
-				m.input.Focus()
+				m.openAPIKeyModal(modalCommit, true, "")
 				return m, nil
 			}
 			m.loading = true
@@ -1357,10 +1516,15 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch k {
 		case "esc":
 			m.input.EchoMode = textinput.EchoNormal
-			m.input.Placeholder = "feat: sua mensagem de commit"
+			m.input.Placeholder = "Mensagem do commit"
 			m.input.SetValue("")
-			m.modal = modalCommit
-			m.input.Focus()
+			m.errMsg = ""
+			m.modal = m.apiKeyReturnModal
+			if m.modal == modalCommit {
+				m.input.Focus()
+			} else {
+				m.input.Blur()
+			}
 			return m, nil
 		case "ctrl+v", "ctrl+shift+v":
 			if text, err := clipboard.ReadAll(); err == nil {
@@ -1371,28 +1535,34 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			apiKey := strings.TrimSpace(m.input.Value())
-			m.input.EchoMode = textinput.EchoNormal
-			m.input.Placeholder = "feat: sua mensagem de commit"
-			m.input.SetValue("")
 			if apiKey == "" {
 				m.errMsg = "A chave de API nao pode estar vazia"
-				m.modal = modalCommit
-				m.input.Focus()
 				return m, nil
 			}
 			cfg, _ := config.Load()
 			cfg.AIAPIKey = apiKey
 			if err := config.Save(cfg); err != nil {
 				m.errMsg = fmt.Sprintf("Erro ao salvar chave: %v", err)
-				m.modal = modalCommit
-				m.input.Focus()
 				return m, nil
 			}
-			m.modal = modalCommit
-			m.input.Focus()
-			m.loading = true
+			m.input.EchoMode = textinput.EchoNormal
+			m.input.Placeholder = "Mensagem do commit"
+			m.input.SetValue("")
 			m.errMsg = ""
-			return m, tea.Batch(m.spinner.Tick, generateCommitMsgCmd(m.client, cfg.AIAPIKey, cfg.AIModel))
+			if m.apiKeyReturnModal == modalCommit {
+				m.modal = modalCommit
+				m.input.Focus()
+				if m.apiKeyRunGenerate {
+					m.loading = true
+					return m, tea.Batch(m.spinner.Tick, generateCommitMsgCmd(m.client, cfg.AIAPIKey, cfg.AIModel))
+				}
+				m.status = "Chave de API salva com sucesso"
+				return m, nil
+			}
+			m.modal = modalNone
+			m.input.Blur()
+			m.status = "Chave de API salva com sucesso"
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)

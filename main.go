@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/FelipeSrutkoske/go-vit/internal/config"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
 	"github.com/FelipeSrutkoske/go-vit/internal/tui"
 )
@@ -23,6 +27,7 @@ Uso:
   go-vit [opções]
 
 Comandos:
+  config           Verifica ou configura a chave de API de IA
   update, upgrade  Atualiza o go-vit para a versão mais recente
 
 Argumentos:
@@ -51,6 +56,53 @@ func runUpdate() error {
 	return nil
 }
 
+func runConfig(in io.Reader, out io.Writer) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("erro ao carregar configuração: %w", err)
+	}
+	path, _ := config.ConfigPath()
+	reader := bufio.NewReader(in)
+
+	if strings.TrimSpace(cfg.AIAPIKey) != "" {
+		fmt.Fprintf(out, "Chave de API atual: %s\n", config.MaskKey(cfg.AIAPIKey))
+		if path != "" {
+			fmt.Fprintf(out, "Arquivo de configuração: %s\n", path)
+		}
+		fmt.Fprint(out, "Deseja substituir a chave de API? (s/N): ")
+		ans, _ := reader.ReadString('\n')
+		ans = strings.ToLower(strings.TrimSpace(ans))
+		if ans != "s" && ans != "sim" && ans != "y" && ans != "yes" {
+			fmt.Fprintln(out, "Nenhuma alteração realizada.")
+			return nil
+		}
+	} else {
+		fmt.Fprintln(out, "Nenhuma chave de API de IA configurada.")
+	}
+
+	fmt.Fprint(out, "Cole sua chave de API: ")
+	keyLine, err := reader.ReadString('\n')
+	if err != nil && len(strings.TrimSpace(keyLine)) == 0 {
+		return fmt.Errorf("leitura cancelada")
+	}
+	apiKey := strings.TrimSpace(keyLine)
+	if apiKey == "" {
+		return fmt.Errorf("a chave de API não pode estar vazia")
+	}
+
+	cfg.AIAPIKey = apiKey
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("erro ao salvar configuração: %w", err)
+	}
+
+	fmt.Fprintf(out, "Chave de API salva (%s)", config.MaskKey(apiKey))
+	if path != "" {
+		fmt.Fprintf(out, " em %s", path)
+	}
+	fmt.Fprintln(out, ".")
+	return nil
+}
+
 func main() {
 	targetDir := "."
 	var hasDir bool
@@ -62,6 +114,16 @@ func main() {
 			return
 		case "-v", "--version":
 			fmt.Printf("go-vit v%s\n", version)
+			return
+		case "config":
+			if len(os.Args) > 2 {
+				fmt.Fprintf(os.Stderr, "Uso inválido: '%s' não aceita argumentos extras.\n", arg)
+				os.Exit(1)
+			}
+			if err := runConfig(os.Stdin, os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		case "update", "upgrade":
 			if len(os.Args) > 2 {

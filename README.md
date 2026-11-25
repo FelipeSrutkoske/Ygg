@@ -24,6 +24,7 @@ go-vit /caminho/do/repositorio
 
 Opções e comandos disponíveis:
 
+- `config`: Verifica ou configura a chave de API de IA (`~/.config/go-vit/config.json`)
 - `update`, `upgrade`: Atualiza o `go-vit` para a versão mais recente via `go install`
 - `-h`, `--help`: Exibe a mensagem de ajuda
 - `-v`, `--version`: Exibe a versão instalada
@@ -53,7 +54,8 @@ Opções e comandos disponíveis:
 | `f` | Executar `git fetch --prune` |
 | `p` | Executar `git pull` |
 | `P` | Executar `git push` (configura `-u origin <branch>` se necessário) |
-| `R` | Atualizar informações do repositório |
+| `R` / `F5` / `Ctrl+R` | Atualizar informações do repositório (também atualiza automaticamente) |
+| `Ctrl+K` | Configurar ou trocar a chave de API de IA |
 | `?` | Exibir / ocultar tela de ajuda |
 | `q` / `Ctrl+C` | Sair do go-vit |
 

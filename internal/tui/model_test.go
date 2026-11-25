@@ -8,6 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/FelipeSrutkoske/go-vit/internal/ai"
+	"github.com/FelipeSrutkoske/go-vit/internal/config"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
 )
 
@@ -563,5 +565,104 @@ func TestBranchesTab_RenameModal(t *testing.T) {
 	}
 	if m.input.Value() != "main" {
 		t.Errorf("expected input pre-filled with 'main', got %q", m.input.Value())
+	}
+}
+
+func TestAutoRefresh_TickAndFocus_PreservesScrollAndSkipsDuringInputModal(t *testing.T) {
+	m := setupLoadedTestModel()
+	updated, _ := m.Update(keyRune('2'))
+	m = updated.(Model)
+
+	// Load a long diff so viewport can scroll
+	var lines []string
+	lines = append(lines, "diff --git a/main.go b/main.go", "--- a/main.go", "+++ b/main.go", "@@ -1,40 +1,40 @@")
+	for i := 0; i < 40; i++ {
+		lines = append(lines, fmt.Sprintf("+line %d", i))
+	}
+	longDiff := strings.Join(lines, "\n") + "\n"
+	updated, _ = m.Update(diffLoadedMsg{path: "main.go", diff: longDiff})
+	m = updated.(Model)
+	m.viewport.SetYOffset(5)
+
+	// Silent diffLoadedMsg with same content should preserve scroll
+	updated, _ = m.Update(diffLoadedMsg{path: "main.go", diff: longDiff, silent: true})
+	m = updated.(Model)
+	if m.viewport.YOffset() != 5 {
+		t.Fatalf("expected YOffset=5 preserved on unchanged silent diff, got %d", m.viewport.YOffset())
+	}
+
+	// Silent diffLoadedMsg with updated content should preserve scroll
+	updated, _ = m.Update(diffLoadedMsg{path: "main.go", diff: longDiff + "+extra\n", silent: true})
+	m = updated.(Model)
+	if m.viewport.YOffset() != 5 {
+		t.Fatalf("expected YOffset=5 preserved on updated silent diff, got %d", m.viewport.YOffset())
+	}
+
+	// FocusMsg triggers refresh cmd when idle
+	_, focusCmd := m.Update(tea.FocusMsg{})
+	if focusCmd == nil {
+		t.Fatalf("expected FocusMsg to trigger silent refresh cmd")
+	}
+
+	// AutoRefreshTickMsg triggers refresh cmd when idle
+	_, tickCmd := m.Update(autoRefreshTickMsg{})
+	if tickCmd == nil {
+		t.Fatalf("expected autoRefreshTickMsg to return batch cmd")
+	}
+
+	// Open commit modal: shouldAutoRefresh becomes false
+	m.state.StagedCount = 1
+	updated, _ = m.Update(keyRune('c'))
+	m = updated.(Model)
+	if m.shouldAutoRefresh() {
+		t.Fatalf("expected shouldAutoRefresh()=false when modalCommit is open")
+	}
+	_, focusWhileModal := m.Update(tea.FocusMsg{})
+	if focusWhileModal != nil {
+		t.Fatalf("expected nil cmd on FocusMsg while modalCommit is open")
+	}
+}
+
+func TestAPIKeyModal_CtrlK_Paste_AndUnauthorizedRePrompt(t *testing.T) {
+	tmpCfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpCfg)
+	t.Setenv("AI_API_KEY", "")
+
+	m := setupLoadedTestModel()
+
+	// Ctrl+K opens modalAPIKey from main screen
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if m.modal != modalAPIKey {
+		t.Fatalf("expected modalAPIKey after Ctrl+K, got %v", m.modal)
+	}
+
+	// PasteMsg trims whitespace and populates input
+	updated, _ = m.Update(tea.PasteMsg{Content: "  nvapi-test-12345678  \n"})
+	m = updated.(Model)
+	if m.input.Value() != "nvapi-test-12345678" {
+		t.Fatalf("expected trimmed pasted key, got %q", m.input.Value())
+	}
+
+	// Enter saves key and returns to modalNone
+	updated, _ = m.Update(keySpecial(tea.KeyEnter))
+	m = updated.(Model)
+	if m.modal != modalNone {
+		t.Fatalf("expected modalNone after saving key, got %v", m.modal)
+	}
+	cfg, err := config.Load()
+	if err != nil || cfg.AIAPIKey != "nvapi-test-12345678" {
+		t.Fatalf("expected saved key in config, got %q (err=%v)", cfg.AIAPIKey, err)
+	}
+
+	// Unauthorized error from AI generation re-opens modalAPIKey
+	m.modal = modalCommit
+	updated, _ = m.Update(commitMsgGeneratedMsg{err: ai.ErrUnauthorized})
+	m = updated.(Model)
+	if m.modal != modalAPIKey || m.apiKeyReturnModal != modalCommit {
+		t.Fatalf("expected modalAPIKey returning to modalCommit on 401/403, got modal=%v return=%v", m.modal, m.apiKeyReturnModal)
+	}
+	if !strings.Contains(m.renderModal(), "401/403") {
+		t.Errorf("expected 401/403 error rendered in modalAPIKey")
 	}
 }

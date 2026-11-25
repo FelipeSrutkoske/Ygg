@@ -46,6 +46,7 @@ type keyMap struct {
 	Pull               key.Binding
 	Push               key.Binding
 	Refresh            key.Binding
+	ConfigureAPIKey    key.Binding
 	Help               key.Binding
 	Quit               key.Binding
 }
@@ -221,8 +222,12 @@ func defaultKeyMap() keyMap {
 			key.WithHelp("P", "push"),
 		),
 		Refresh: key.NewBinding(
-			key.WithKeys("R"),
-			key.WithHelp("R", "atualizar"),
+			key.WithKeys("R", "f5", "ctrl+r"),
+			key.WithHelp("R/F5", "atualizar"),
+		),
+		ConfigureAPIKey: key.NewBinding(
+			key.WithKeys("ctrl+k"),
+			key.WithHelp("Ctrl+K", "chave de API"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),
@@ -245,6 +250,6 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Switch, k.ToggleRemotes, k.NewBranch, k.RenameBranch, k.DeleteBranch, k.MergeBranch, k.RebaseBranch},
 		{k.Stage, k.StageAll, k.Commit, k.Stash, k.ApplyStash, k.Discard, k.ViewDiff, k.ToggleDiffMode, k.NextHunk, k.PrevHunk, k.OpenEditor},
 		{k.RevertCommit, k.CherryPick, k.ToggleCommitBranch, k.CommitPrevFile, k.CommitNextFile, k.ContinueOp, k.AbortOp, k.KeepOurs, k.AcceptTheirs},
-		{k.Fetch, k.Pull, k.Push, k.Refresh, k.Help, k.Quit},
+		{k.Fetch, k.Pull, k.Push, k.Refresh, k.ConfigureAPIKey, k.Help, k.Quit},
 	}
 }

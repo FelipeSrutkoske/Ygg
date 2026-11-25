@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/FelipeSrutkoske/go-vit/internal/config"
 	"github.com/FelipeSrutkoske/go-vit/internal/git"
 )
 
@@ -17,6 +18,7 @@ func (m Model) View() tea.View {
 	if m.width == 0 || m.height == 0 {
 		v := tea.NewView("Carregando go-vit...")
 		v.AltScreen = true
+		v.ReportFocus = true
 		return v
 	}
 
@@ -33,6 +35,7 @@ func (m Model) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
+	v.ReportFocus = true
 	return v
 }
 
@@ -860,7 +863,7 @@ func (m Model) renderFooter() string {
 	} else if m.status != "" {
 		top = m.styles.bannerInfo.Render(truncateText(m.status, maxW))
 	} else {
-		top = m.styles.footer.Render(truncateText("f:fetch  p:pull  P:push  /:filtrar  Enter/d:diff  Tab/1-4:abas  ?:ajuda  q:sair", maxW))
+		top = m.styles.footer.Render(truncateText("f:fetch  p:pull  P:push  R:atualizar  /:filtrar  Enter/d:diff  Tab/1-4:abas  Ctrl+K:API  ?:ajuda  q:sair", maxW))
 	}
 
 	cmdStr := m.lastGitCmd
@@ -985,7 +988,7 @@ func (m Model) renderModal() string {
 			m.styles.itemMuted.Render("Enter: guardar alteracoes   Esc: cancelar")
 
 	case modalCommit:
-		statusLine := m.styles.itemMuted.Render("Enter: commitar   Ctrl+G: gerar com IA   Esc: cancelar")
+		statusLine := m.styles.itemMuted.Render("Enter: commitar   Ctrl+G: gerar com IA   Ctrl+K: chave API   Esc: cancelar")
 		if m.loading {
 			statusLine = m.styles.modalTitle.Render(m.spinner.View() + " Gerando mensagem com IA...")
 		} else if m.errMsg != "" {
@@ -997,10 +1000,22 @@ func (m Model) renderModal() string {
 			statusLine
 
 	case modalAPIKey:
+		cfg, _ := config.Load()
+		currentMasked := config.MaskKey(cfg.AIAPIKey)
+		hint := "Enter: salvar   Esc: voltar"
+		if m.apiKeyRunGenerate {
+			hint = "Enter: salvar e gerar   Esc: voltar"
+		}
+		errBlock := ""
+		if m.errMsg != "" {
+			errBlock = m.styles.modalWarn.Render("Erro: "+m.errMsg) + "\n\n"
+		}
 		body = m.styles.modalTitle.Render("Configurar chave de API (IA)") + "\n\n" +
-			"Cole sua chave de API (sera salva com permissao 0600 em ~/.config/go-vit/config.json):\n" +
+			errBlock +
+			m.styles.itemMuted.Render("Chave atual: "+currentMasked) + "\n" +
+			"Cole sua chave de API (salva com permissao 0600 em ~/.config/go-vit/config.json):\n" +
 			m.input.View() + "\n\n" +
-			m.styles.itemMuted.Render("Enter: salvar e gerar   Esc: voltar")
+			m.styles.itemMuted.Render(hint)
 
 	case modalDeleteBranch:
 		body = m.styles.modalTitle.Render("Excluir branch") + "\n\n" +

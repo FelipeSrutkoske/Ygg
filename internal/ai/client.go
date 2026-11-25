@@ -19,13 +19,18 @@ const (
 	httpTimeout    = 30 * time.Second
 )
 
-var noisyLockfiles = map[string]bool{
-	"go.sum":            true,
-	"package-lock.json": true,
-	"yarn.lock":         true,
-	"pnpm-lock.yaml":    true,
-	"Cargo.lock":        true,
-}
+var (
+	// ErrUnauthorized is returned when the AI API rejects the configured API key.
+	ErrUnauthorized = errors.New("chave de API inválida ou sem permissão (HTTP 401/403)")
+
+	noisyLockfiles = map[string]bool{
+		"go.sum":            true,
+		"package-lock.json": true,
+		"yarn.lock":         true,
+		"pnpm-lock.yaml":    true,
+		"Cargo.lock":        true,
+	}
+)
 
 // Client calls NVIDIA NIM's OpenAI-compatible chat completions API.
 type Client struct {
@@ -127,7 +132,7 @@ func (c *Client) GenerateCommitMessage(ctx context.Context, stagedDiff string) (
 	_ = json.Unmarshal(body, &parsed)
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", errors.New("chave de API inválida ou sem permissão (HTTP 401/403)")
+		return "", ErrUnauthorized
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if parsed.Error != nil && parsed.Error.Message != "" {
